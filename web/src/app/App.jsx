@@ -155,6 +155,59 @@ export default function App() {
     document.title = current ? `${current.title} · TubeTunes` : 'TubeTunes Player';
   }, [current]);
 
+  // Keep the screen on while music plays. Phones pause YouTube's player when the
+  // screen locks, so this is what keeps a song going.
+  const [keepAwake, setKeepAwake] = useState(() => {
+    try {
+      return localStorage.getItem('tubetunes:keepAwake') !== '0';
+    } catch {
+      return true;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem('tubetunes:keepAwake', keepAwake ? '1' : '0');
+    } catch {}
+  }, [keepAwake]);
+
+  useEffect(() => {
+    if (!keepAwake || !isPlaying || !('wakeLock' in navigator)) return;
+    let lock = null;
+    let active = true;
+    const request = async () => {
+      try {
+        lock = await navigator.wakeLock.request('screen');
+      } catch {}
+    };
+    // The browser drops the lock whenever the tab is hidden; take it again on return
+    const onVisible = () => active && document.visibilityState === 'visible' && request();
+    request();
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      active = false;
+      document.removeEventListener('visibilitychange', onVisible);
+      if (lock) lock.release().catch(() => {});
+    };
+  }, [keepAwake, isPlaying]);
+
+  // If the phone locked anyway and the song stopped, explain why on return
+  const playingWhenHidden = useRef(false);
+  useEffect(() => {
+    const onChange = () => {
+      if (document.visibilityState === 'hidden') {
+        playingWhenHidden.current = isPlaying;
+      } else if (playingWhenHidden.current && playerReady.current && player.current.getPlayerState() !== 1) {
+        showToast(
+          keepAwake
+            ? 'Music pauses when the screen locks. Press ▶ to continue.'
+            : 'Music pauses when the screen locks. Turn on ☀ to keep the screen on while playing.'
+        );
+      }
+    };
+    document.addEventListener('visibilitychange', onChange);
+    return () => document.removeEventListener('visibilitychange', onChange);
+  }, [isPlaying, keepAwake, showToast]);
+
   // ---------- Playback ----------
   const loadVideo = (id) => {
     setTime({ t: 0, d: 0 });
@@ -598,6 +651,16 @@ export default function App() {
               onClick={() => setRepeat((r) => ({ off: 'all', all: 'one', one: 'off' }[r]))}
             >
               {repeat === 'one' ? '⟳¹' : '⟳'}
+            </button>
+            <button
+              className={`icon-btn toggle ${keepAwake ? 'on' : ''}`}
+              title={keepAwake ? 'Screen stays on while playing (tap to turn off)' : 'Keep screen on while playing'}
+              onClick={() => {
+                setKeepAwake(!keepAwake);
+                showToast(keepAwake ? 'Screen can lock again while playing' : 'Screen stays on while music plays');
+              }}
+            >
+              ☀
             </button>
           </div>
           <div className="progress-row">

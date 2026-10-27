@@ -18,6 +18,7 @@ import {
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import * as Clipboard from 'expo-clipboard';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { Ionicons } from '@expo/vector-icons';
 
 import { colors } from './src/theme';
@@ -125,6 +126,12 @@ function Main() {
   useEffect(() => {
     if (loaded) saveLibrary(lib);
   }, [lib, loaded]);
+
+  // YouTube's player stops when the phone locks, so keep the screen on while music plays
+  useEffect(() => {
+    if (isPlaying) activateKeepAwakeAsync('player').catch(() => {});
+    else deactivateKeepAwake('player').catch(() => {});
+  }, [isPlaying]);
 
   const showToast = useCallback((msg) => {
     setToast(msg);
