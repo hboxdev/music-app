@@ -3,17 +3,19 @@ import { Image, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'rea
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from './theme';
-import { thumbUrl } from './youtube';
+import { SOURCE_LABELS, artworkOf, sourceOf } from './sources';
 
 // Bottom sheet with actions for one song
 export default function SongMenu({
   song,
+  inLibrary,
   playlists,
   currentPlaylistId,
   onClose,
   onPlayNext,
+  onAddToLibrary,
   onEdit,
-  onOpenYouTube,
+  onOpenSource,
   onAddToPlaylist,
   onNewPlaylist,
   onRemoveFromPlaylist,
@@ -39,13 +41,15 @@ export default function SongMenu({
   );
 
   const others = playlists.filter((p) => p.id !== currentPlaylistId);
+  const src = sourceOf(song);
+  const art = artworkOf(song);
 
   return (
     <Modal transparent animationType="slide" visible onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose} />
       <View style={[styles.sheet, { paddingBottom: insets.bottom + 12 }]}>
         <View style={styles.head}>
-          <Image source={{ uri: thumbUrl(song.id) }} style={styles.thumb} />
+          {art ? <Image source={{ uri: art }} style={styles.thumb} /> : <View style={styles.thumb} />}
           <View style={{ flex: 1 }}>
             <Text style={styles.title} numberOfLines={2}>{song.title}</Text>
             <Text style={styles.artist} numberOfLines={1}>{song.artist || 'Unknown artist'}</Text>
@@ -71,13 +75,18 @@ export default function SongMenu({
         ) : (
           <View>
             <Item icon="play-forward-outline" label="Play next" onPress={act(onPlayNext)} />
+            {!inLibrary ? <Item icon="heart-outline" label="Add to library" onPress={act(onAddToLibrary)} /> : null}
             <Item icon="add-outline" label="Add to playlist" onPress={() => setPicking(true)} />
-            {currentPlaylistId ? (
+            {inLibrary && currentPlaylistId ? (
               <Item icon="remove-circle-outline" label="Remove from this playlist" onPress={act(onRemoveFromPlaylist)} />
             ) : null}
-            <Item icon="create-outline" label="Edit title / artist" onPress={act(onEdit)} />
-            <Item icon="logo-youtube" label="Open in YouTube" onPress={act(onOpenYouTube)} />
-            <Item icon="trash-outline" label="Delete from library" danger onPress={act(onDelete)} />
+            {inLibrary ? <Item icon="create-outline" label="Edit title / artist" onPress={act(onEdit)} /> : null}
+            <Item
+              icon={src === 'youtube' ? 'logo-youtube' : 'open-outline'}
+              label={src === 'url' ? 'Open link' : `Open in ${SOURCE_LABELS[src]}`}
+              onPress={act(onOpenSource)}
+            />
+            {inLibrary ? <Item icon="trash-outline" label="Delete from library" danger onPress={act(onDelete)} /> : null}
           </View>
         )}
       </View>

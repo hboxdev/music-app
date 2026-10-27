@@ -15,6 +15,22 @@ TubeTunes turns a person's YouTube playlists into a music app. It has three part
 3. TubeTunes reads their playlists and liked videos through the YouTube Data API and shows them as a music library. **Sync** refreshes them, and the phone app also refreshes quietly when it starts.
 4. Songs play through YouTube's official embedded player. Nothing is downloaded as MP3.
 
+### Music sources
+
+| Source | How songs get in | Plays with the screen locked? |
+|---|---|---|
+| YouTube | Sync, or paste a song/playlist link | No (YouTube's player stops). TubeTunes keeps the screen on instead |
+| Audius | **Search** tab, or paste an `audius.co` link | Yes, with lock-screen controls |
+| Jamendo | **Search** tab, or paste a `jamendo.com/track/…` link | Yes, with lock-screen controls |
+| Direct audio link | Paste a link to an `.mp3` (or other audio) file you have the right to play | Yes |
+
+Audius needs no key. Jamendo needs a free Client ID: sign up at <https://devportal.jamendo.com>, create an app, and put its Client ID in:
+
+- `web/.env` (and Vercel) → `VITE_JAMENDO_CLIENT_ID=...`
+- `mobile/src/config.js` → `JAMENDO_CLIENT_ID`
+
+Until then, Search shows Audius only.
+
 There is no backend. Each device keeps its library locally and talks to Google directly. Signing in with the same Google account on the phone and the web shows the same playlists.
 
 Users can also paste any YouTube song, playlist or Mix link without signing in.

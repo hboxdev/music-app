@@ -19,6 +19,7 @@ import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-cont
 import { StatusBar } from 'expo-status-bar';
 import * as Clipboard from 'expo-clipboard';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
+import { createAudioPlayer, setAudioModeAsync } from 'expo-audio';
 import { Ionicons } from '@expo/vector-icons';
 
 import { colors } from './src/theme';
@@ -29,8 +30,23 @@ import {
   fetchManyVideoInfo,
   fetchPlaylistTitle,
   fetchVideoInfo,
-  thumbUrl,
 } from './src/youtube';
+import {
+  artworkOf,
+  directAudioSong,
+  extractJamendoId,
+  isAudiusLink,
+  isYouTube,
+  jamendoTrack,
+  pageUrlOf,
+  popularJamendo,
+  resolveAudius,
+  searchAudius,
+  searchJamendo,
+  streamUrlOf,
+  trendingAudius,
+} from './src/sources';
+import { JAMENDO_CLIENT_ID } from './src/config';
 import { mergeSync, removeSynced, syncYouTube } from './src/ytsync';
 import { dropToken, getAccessToken, googleAvailable, signOutGoogle } from './src/google';
 import SongRow from './src/SongRow';
@@ -69,6 +85,14 @@ function choose(title, message, buttons) {
   });
 }
 
+// Mixes several result lists: a1, b1, a2, b2, ...
+function interleave(lists) {
+  const out = [];
+  const max = Math.max(0, ...lists.map((l) => l.length));
+  for (let i = 0; i < max; i++) for (const l of lists) if (l[i]) out.push(l[i]);
+  return out;
+}
+
 const ERROR_REASONS = {
   2: 'invalid video',
   5: 'player error',
@@ -85,7 +109,12 @@ function Main() {
   const [loaded, setLoaded] = useState(false);
 
   // Navigation
-  const [tab, setTab] = useState('songs'); // songs | playlists
+  const [tab, setTab] = useState('songs'); // songs | playlists | search
+
+  // Search (Audius + Jamendo)
+  const [searchText, setSearchText] = useState('');
+  const [search, setSearch] = useState({ q: '', source: 'all', results: [], loading: false, error: '', heading: '' });
+  const searchSeq = useRef(0);
   const [openPlaylistId, setOpenPlaylistId] = useState(null);
   const [filter, setFilter] = useState('');
 
@@ -127,12 +156,6 @@ function Main() {
     if (loaded) saveLibrary(lib);
   }, [lib, loaded]);
 
-  // YouTube's player stops when the phone locks, so keep the screen on while music plays
-  useEffect(() => {
-    if (isPlaying) activateKeepAwakeAsync('player').catch(() => {});
-    else deactivateKeepAwake('player').catch(() => {});
-  }, [isPlaying]);
-
   const showToast = useCallback((msg) => {
     setToast(msg);
     clearTimeout(toastTimer.current);
@@ -154,11 +177,63 @@ function Main() {
   }, [openPlaylist, songMap, lib.songs, filter]);
 
   const current = queue[index] || null;
+  const currentIsYouTube = !!current && isYouTube(current);
+
+  // ---------- Audio engine (Audius, Jamendo, links) ----------
+  // A native audio player keeps going when the phone is locked and shows
+  // play/pause on the lock screen. YouTube songs use the WebView player instead.
+  const audio = useMemo(() => createAudioPlayer(null, { updateInterval: 500 }), []);
+  const audioHandler = useRef(() => {});
+  const [audioTime, setAudioTime] = useState({ t: 0, d: 0 });
+  const audioLoadTimer = useRef(null);
+
+  useEffect(() => {
+    setAudioModeAsync({
+      playsInSilentMode: true,
+      shouldPlayInBackground: true,
+      interruptionMode: 'doNotMix',
+    }).catch(() => {});
+    const sub = audio.addListener('playbackStatusUpdate', (st) => audioHandler.current(st));
+    return () => {
+      sub.remove();
+      audio.remove();
+    };
+  }, [audio]);
+
+  // YouTube's player stops when the phone locks, so keep the screen on during YouTube songs
+  useEffect(() => {
+    if (isPlaying && currentIsYouTube) activateKeepAwakeAsync('player').catch(() => {});
+    else deactivateKeepAwake('player').catch(() => {});
+  }, [isPlaying, currentIsYouTube]);
 
   // ---------- Playback ----------
-  const loadVideo = (id) => {
-    if (playerReady.current) player.current.load(id);
-    else pendingVideo.current = id;
+  const loadSong = (song) => {
+    clearTimeout(audioLoadTimer.current);
+    if (isYouTube(song)) {
+      audio.pause();
+      try {
+        audio.clearLockScreenControls();
+      } catch {}
+      if (playerReady.current) player.current.load(song.id);
+      else pendingVideo.current = song.id;
+      return;
+    }
+    pendingVideo.current = null;
+    if (playerReady.current) player.current.pause();
+    setAudioTime({ t: 0, d: song.duration || 0 });
+    audio.replace({ uri: streamUrlOf(song) });
+    audio.play();
+    try {
+      audio.setActiveForLockScreen(
+        true,
+        { title: song.title, artist: song.artist || '', albumTitle: 'TubeTunes', artworkUrl: artworkOf(song) || undefined },
+        { showSeekForward: false, showSeekBackward: false }
+      );
+    } catch {}
+    // A stream that never loads is skipped
+    audioLoadTimer.current = setTimeout(() => {
+      if (!audio.isLoaded) nextRef.current && nextRef.current.skipBroken('the stream did not load');
+    }, 20000);
   };
 
   const startQueue = (songs, start = 0, forceShuffle = shuffle) => {
@@ -174,38 +249,79 @@ function Main() {
     }
     setQueue(q);
     setIndex(i);
-    loadVideo(q[i].id);
+    loadSong(q[i]);
   };
 
   const goTo = (i) => {
     setIndex(i);
-    loadVideo(queue[i].id);
+    loadSong(queue[i]);
   };
 
   const next = (auto = false) => {
     if (!queue.length) return;
     if (index < queue.length - 1) goTo(index + 1);
     else if (repeat === 'all' || !auto) goTo(0);
-    else setIsPlaying(false);
+    else {
+      setIsPlaying(false);
+      if (!currentIsYouTube) audio.pause();
+    }
   };
-  nextRef.current = next;
+
+  const seekTo = (sec) => {
+    if (!current) return;
+    if (currentIsYouTube) player.current.seekTo(sec);
+    else {
+      audio.seekTo(sec).catch(() => {});
+      setAudioTime((t) => ({ ...t, t: sec }));
+    }
+  };
+
+  const currentTime = () => (currentIsYouTube ? player.current.getTime() : audioTime.t);
 
   const prev = () => {
     if (!queue.length) return;
-    if (player.current.getTime() > 3) {
-      player.current.seekTo(0);
+    if (currentTime() > 3) {
+      seekTo(0);
       return;
     }
     goTo(index > 0 ? index - 1 : queue.length - 1);
   };
+
+  const resume = () => (currentIsYouTube ? player.current.play() : audio.play());
+  const pause = () => (currentIsYouTube ? player.current.pause() : audio.pause());
 
   const playPause = () => {
     if (!current) {
       startQueue(viewSongs, 0);
       return;
     }
-    if (isPlaying) player.current.pause();
-    else player.current.play();
+    if (isPlaying) pause();
+    else resume();
+  };
+
+  const onSongEnded = () => {
+    if (repeat === 'one') {
+      seekTo(0);
+      resume();
+    } else {
+      next(true);
+    }
+  };
+
+  const skipBroken = (reason) => {
+    showToast(`Can't play ${current ? `"${current.title}"` : 'this song'}: ${reason}. Skipping.`);
+    setTimeout(() => nextRef.current && nextRef.current.next(true), 1500);
+  };
+
+  // Latest versions, for callbacks that fire later (timers, native events)
+  nextRef.current = { next, skipBroken };
+
+  audioHandler.current = (st) => {
+    if (!current || currentIsYouTube) return;
+    if (st.isLoaded) clearTimeout(audioLoadTimer.current);
+    setIsPlaying(!!st.playing);
+    setAudioTime({ t: st.currentTime || 0, d: st.duration || current.duration || 0 });
+    if (st.didJustFinish) onSongEnded();
   };
 
   const toggleShuffle = () => {
@@ -229,22 +345,43 @@ function Main() {
   };
 
   const onPlayerState = (s) => {
+    if (!currentIsYouTube) return;
     if (s === 1) setIsPlaying(true);
     else if (s === 2 || s === 0 || s === 5) setIsPlaying(false);
-    if (s === 0) {
-      if (repeat === 'one') {
-        player.current.seekTo(0);
-        player.current.play();
-      } else {
-        next(true);
-      }
-    }
+    if (s === 0) onSongEnded();
   };
 
   const onPlayerError = (code) => {
-    const name = current ? `"${current.title}"` : 'this video';
-    showToast(`Can't play ${name}: ${ERROR_REASONS[code] || 'error ' + code}. Skipping.`);
-    setTimeout(() => nextRef.current && nextRef.current(true), 1500);
+    if (currentIsYouTube) skipBroken(ERROR_REASONS[code] || 'error ' + code);
+  };
+
+  // ---------- Search ----------
+  const runSearch = async (q, source) => {
+    const seq = ++searchSeq.current;
+    setSearch((s) => ({ ...s, q, source, loading: true, error: '' }));
+    const tasks = [];
+    if (source !== 'jamendo') tasks.push(q ? searchAudius(q) : trendingAudius());
+    if (source === 'jamendo' || (source === 'all' && JAMENDO_CLIENT_ID)) {
+      tasks.push(q ? searchJamendo(q, JAMENDO_CLIENT_ID) : popularJamendo(JAMENDO_CLIENT_ID));
+    }
+    const settled = await Promise.allSettled(tasks);
+    if (seq !== searchSeq.current) return;
+    setSearch((s) => ({
+      ...s,
+      results: interleave(settled.filter((r) => r.status === 'fulfilled').map((r) => r.value)),
+      loading: false,
+      error: settled
+        .filter((r) => r.status === 'rejected')
+        .map((r) => r.reason.message)
+        .join(' '),
+      heading: q ? `Results for “${q}”` : 'Trending now',
+    }));
+  };
+
+  const openSearchTab = () => {
+    setTab('search');
+    setFilter('');
+    if (!search.results.length && !search.loading) runSearch(search.q, search.source);
   };
 
   // ---------- YouTube sync ----------
@@ -309,16 +446,25 @@ function Main() {
         )
       : playlists;
 
-  const addSong = async (videoId) => {
-    if (songMap[videoId]) {
-      setLib((l) => ({ ...l, playlists: addToOpenPlaylist(l.playlists, videoId) }));
-      showToast(
-        openPlaylistId
-          ? `"${songMap[videoId].title}" added to this playlist`
-          : `"${songMap[videoId].title}" is already in your library`
-      );
-      return;
-    }
+  // Adds a full song object (YouTube, Search result or resolved link) to the library
+  const addSongObject = (song) => {
+    const exists = !!songMap[song.id];
+    setLib((l) => ({
+      ...l,
+      songs: l.songs.some((s) => s.id === song.id) ? l.songs : [{ ...song, addedAt: Date.now() }, ...l.songs],
+      playlists: addToOpenPlaylist(l.playlists, song.id),
+    }));
+    showToast(
+      exists
+        ? openPlaylist && openPlaylist.source !== 'youtube'
+          ? `"${song.title}" added to this playlist`
+          : `"${song.title}" is already in your library`
+        : `Added "${song.title}"`
+    );
+  };
+
+  const addYouTubeSong = async (videoId) => {
+    if (songMap[videoId]) return addSongObject(songMap[videoId]);
     setBusy('Adding song…');
     const info = await fetchVideoInfo(videoId);
     setBusy(null);
@@ -326,12 +472,7 @@ function Main() {
       Alert.alert("Couldn't add song", 'That video may be private, removed, or blocked from playing in apps.');
       return;
     }
-    const song = { id: videoId, ...info, addedAt: Date.now() };
-    setLib((l) => ({
-      songs: [song, ...l.songs.filter((s) => s.id !== videoId)],
-      playlists: addToOpenPlaylist(l.playlists, videoId),
-    }));
-    showToast(`Added "${info.title}"`);
+    addSongObject({ id: videoId, source: 'youtube', ...info });
   };
 
   const readPlaylistIds = (listId) =>
@@ -369,10 +510,11 @@ function Main() {
     const now = Date.now();
     const newSongs = missing
       .filter((id) => infos[id])
-      .map((id, k) => ({ id, ...infos[id], addedAt: now - k }));
+      .map((id, k) => ({ id, source: 'youtube', ...infos[id], addedAt: now - k }));
     const playlist = {
       id: `pl_${now}`,
       name,
+      source: 'local',
       songIds: unique.filter((id) => have.has(id) || infos[id]),
     };
 
@@ -413,11 +555,44 @@ function Main() {
       if (choice !== 'song') return;
     }
 
-    if (!videoId) {
-      Alert.alert('Not a YouTube link', 'Copy a link from the YouTube app (Share → Copy link) and paste it here.');
+    if (videoId) return addYouTubeSong(videoId);
+
+    // Audius
+    if (isAudiusLink(url)) {
+      setBusy('Finding the track on Audius…');
+      const song = await resolveAudius(url).catch(() => null);
+      setBusy(null);
+      if (song) addSongObject(song);
+      else Alert.alert("Couldn't add song", 'Could not find that Audius track.');
       return;
     }
-    await addSong(videoId);
+
+    // Jamendo
+    const jamendoId = extractJamendoId(url);
+    if (jamendoId) {
+      setBusy('Finding the track on Jamendo…');
+      try {
+        const song = await jamendoTrack(jamendoId, JAMENDO_CLIENT_ID);
+        if (song) addSongObject(song);
+        else Alert.alert("Couldn't add song", 'Could not find that Jamendo track.');
+      } catch (e) {
+        Alert.alert("Couldn't add song", e.message);
+      } finally {
+        setBusy(null);
+      }
+      return;
+    }
+
+    // Direct audio file (checked when it plays)
+    const song = directAudioSong(url);
+    if (!song) {
+      Alert.alert(
+        'Link not recognized',
+        'Paste a link from YouTube, Audius or Jamendo, or a direct link to an MP3 or other audio file.'
+      );
+      return;
+    }
+    addSongObject(song);
   };
 
   const submitLink = () => {
@@ -432,14 +607,19 @@ function Main() {
     if (text) setLinkText(text.trim());
   };
 
-  const createPlaylist = (songIds = [], then) =>
+  // songs: song objects to put in the new playlist (added to the library if needed)
+  const createPlaylist = (songs = [], then) =>
     setPrompt({
       title: 'New playlist',
       fields: [{ key: 'name', label: 'Name', value: '' }],
       submitLabel: 'Create',
       onSubmit: ({ name }) => {
-        const pl = { id: `pl_${Date.now()}`, name: name.trim(), songIds };
-        setLib((l) => ({ ...l, playlists: [...l.playlists, pl] }));
+        const pl = { id: `pl_${Date.now()}`, name: name.trim(), source: 'local', songIds: songs.map((s) => s.id) };
+        setLib((l) => {
+          const have = new Set(l.songs.map((s) => s.id));
+          const add = songs.filter((s) => !have.has(s.id)).map((s) => ({ ...s, addedAt: Date.now() }));
+          return { ...l, songs: [...add, ...l.songs], playlists: [...l.playlists, pl] };
+        });
         then && then(pl);
       },
     });
@@ -495,6 +675,7 @@ function Main() {
   const addToPlaylist = (song, playlistId) => {
     setLib((l) => ({
       ...l,
+      songs: l.songs.some((s) => s.id === song.id) ? l.songs : [{ ...song, addedAt: Date.now() }, ...l.songs],
       playlists: l.playlists.map((p) =>
         p.id === playlistId && !p.songIds.includes(song.id) ? { ...p, songIds: [...p.songIds, song.id] } : p
       ),
@@ -553,7 +734,58 @@ function Main() {
     />
   );
 
-  const showingSongs = tab === 'songs' || openPlaylist;
+  const screen = openPlaylist ? 'songs' : tab;
+
+  const renderResult = ({ item, index: i }) => (
+    <SongRow
+      song={item}
+      number={i + 1}
+      playing={!!current && current.id === item.id}
+      onPress={() => startQueue(search.results, i)}
+      onMore={() => setMenuSong(item)}
+      onAdd={() => addSongObject(item)}
+      inLibrary={!!songMap[item.id]}
+    />
+  );
+
+  const searchHeader = (
+    <View style={styles.searchHead}>
+      <Text style={styles.searchHint}>Songs from Audius and Jamendo keep playing when your phone is locked.</Text>
+      <View style={styles.search}>
+        <Ionicons name="search" size={16} color={colors.muted} />
+        <TextInput
+          style={styles.searchInput}
+          value={searchText}
+          onChangeText={setSearchText}
+          placeholder="Song, artist or mood: lofi, workout…"
+          placeholderTextColor={colors.muted}
+          returnKeyType="search"
+          onSubmitEditing={() => runSearch(searchText.trim(), search.source)}
+          clearButtonMode="while-editing"
+        />
+      </View>
+      <View style={styles.chips}>
+        {[
+          ['all', 'All'],
+          ['audius', 'Audius'],
+          ['jamendo', 'Jamendo'],
+        ].map(([key, label]) => (
+          <Pressable
+            key={key}
+            onPress={() => runSearch(search.q, key)}
+            style={[styles.tab, search.source === key && styles.tabActive]}
+          >
+            <Text style={[styles.tabText, search.source === key && styles.tabTextActive]}>{label}</Text>
+          </Pressable>
+        ))}
+      </View>
+      {search.error ? <Text style={styles.errorText}>{search.error}</Text> : null}
+      {search.source === 'all' && !JAMENDO_CLIENT_ID ? (
+        <Text style={styles.muted}>Jamendo results appear once a Jamendo Client ID is added.</Text>
+      ) : null}
+      {!search.loading && search.results.length ? <Text style={styles.resultsHead}>{search.heading}</Text> : null}
+    </View>
+  );
 
   const listHeader = (
     <View>
@@ -615,7 +847,7 @@ function Main() {
         <Text style={styles.emptyText}>
           {openPlaylist
             ? 'Tap + to paste a link into this playlist, or use a song\'s ⋮ menu → Add to playlist.'
-            : 'In the YouTube app, tap Share → Copy link, then tap + here and paste it. Playlist links import every song.'}
+            : 'Find songs in the Search tab, or tap + and paste a YouTube, Audius, Jamendo or MP3 link.'}
         </Text>
       ) : null}
     </View>
@@ -657,10 +889,12 @@ function Main() {
             {[
               ['songs', `Songs · ${lib.songs.length}`],
               ['playlists', `Playlists · ${lib.playlists.length}`],
+              ['search', 'Search'],
             ].map(([key, label]) => (
               <Pressable
                 key={key}
                 onPress={() => {
+                  if (key === 'search') return openSearchTab();
                   setTab(key);
                   setFilter('');
                 }}
@@ -672,7 +906,27 @@ function Main() {
           </View>
         ) : null}
 
-        {showingSongs ? (
+        {screen === 'search' ? (
+          <FlatList
+            data={search.loading ? [] : search.results}
+            keyExtractor={(s) => s.id}
+            renderItem={renderResult}
+            ListHeaderComponent={searchHeader}
+            ListEmptyComponent={
+              search.loading ? (
+                <ActivityIndicator color={colors.accent} size="large" style={{ marginTop: 40 }} />
+              ) : (
+                <View style={styles.empty}>
+                  <Text style={styles.emptyTitle}>{search.q ? 'Nothing found' : 'Search for music'}</Text>
+                  <Text style={styles.emptyText}>Try another word, or a different source.</Text>
+                </View>
+              )
+            }
+            contentContainerStyle={styles.listContent}
+            keyboardShouldPersistTaps="handled"
+            extraData={[current && current.id, songMap]}
+          />
+        ) : screen === 'songs' ? (
           <FlatList
             data={viewSongs}
             keyExtractor={(s) => s.id}
@@ -732,8 +986,8 @@ function Main() {
                   setOpenPlaylistId(item.id);
                 }}
               >
-                {item.songIds[0] ? (
-                  <Image source={{ uri: thumbUrl(item.songIds[0]) }} style={styles.plThumb} />
+                {item.songIds[0] && songMap[item.songIds[0]] && artworkOf(songMap[item.songIds[0]]) ? (
+                  <Image source={{ uri: artworkOf(songMap[item.songIds[0]]) }} style={styles.plThumb} />
                 ) : (
                   <View style={[styles.plThumb, styles.plNew]}>
                     <Ionicons name="musical-notes" size={22} color={colors.muted} />
@@ -778,6 +1032,8 @@ function Main() {
         onReady={onPlayerReady}
         onStateChange={onPlayerState}
         onError={onPlayerError}
+        audioTime={current && !currentIsYouTube ? audioTime : null}
+        onSeekAudio={seekTo}
       />
 
       {/* Invisible player used only to read playlist contents */}
@@ -797,9 +1053,11 @@ function Main() {
           <Pressable style={StyleSheet.absoluteFill} onPress={() => setAddOpen(false)} />
           <View style={styles.dialog}>
             <Text style={styles.dialogTitle}>
-              {openPlaylist && openPlaylist.source !== 'youtube' ? `Add to "${openPlaylist.name}"` : 'Add from YouTube'}
+              {openPlaylist && openPlaylist.source !== 'youtube' ? `Add to "${openPlaylist.name}"` : 'Add from a link'}
             </Text>
-            <Text style={styles.dialogHint}>Paste a link to a song or a whole playlist.</Text>
+            <Text style={styles.dialogHint}>
+              Paste a YouTube song or playlist link, an Audius or Jamendo track link, or a direct MP3 link.
+            </Text>
             <View style={styles.linkRow}>
               <TextInput
                 style={styles.linkInput}
@@ -836,14 +1094,19 @@ function Main() {
 
       <SongMenu
         song={menuSong}
+        inLibrary={!!menuSong && !!songMap[menuSong.id]}
         playlists={lib.playlists.filter((p) => p.source !== 'youtube')}
-        currentPlaylistId={openPlaylist && openPlaylist.source !== 'youtube' ? openPlaylistId : null}
+        currentPlaylistId={screen === 'songs' && openPlaylist && openPlaylist.source !== 'youtube' ? openPlaylistId : null}
         onClose={() => setMenuSong(null)}
         onPlayNext={playNext}
+        onAddToLibrary={addSongObject}
         onEdit={editSong}
-        onOpenYouTube={(s) => Linking.openURL(`https://www.youtube.com/watch?v=${s.id}`)}
+        onOpenSource={(s) => {
+          const url = pageUrlOf(s);
+          if (url) Linking.openURL(url).catch(() => {});
+        }}
         onAddToPlaylist={addToPlaylist}
-        onNewPlaylist={(s) => createPlaylist([s.id], (pl) => showToast(`Added to "${pl.name}"`))}
+        onNewPlaylist={(s) => createPlaylist([s], (pl) => showToast(`Added to "${pl.name}"`))}
         onRemoveFromPlaylist={removeFromPlaylist}
         onDelete={deleteSong}
       />
@@ -959,6 +1222,12 @@ const styles = StyleSheet.create({
   plNew: { alignItems: 'center', justifyContent: 'center' },
   plName: { color: colors.text, fontSize: 16, fontWeight: '600' },
   plMeta: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+
+  searchHead: { paddingTop: 4, paddingBottom: 4 },
+  searchHint: { color: colors.muted, fontSize: 13, paddingHorizontal: 12, marginBottom: 2 },
+  chips: { flexDirection: 'row', gap: 8, paddingHorizontal: 12, marginTop: 4, marginBottom: 8 },
+  errorText: { color: colors.danger, paddingHorizontal: 12, marginBottom: 6 },
+  resultsHead: { color: colors.text, fontSize: 16, fontWeight: '700', paddingHorizontal: 12, marginTop: 10, marginBottom: 4 },
 
   ytCard: {
     margin: 12,

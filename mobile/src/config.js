@@ -1,3 +1,6 @@
 // Paste your Google OAuth "Web application" Client ID here (the same one the website uses).
 // Example: '1234567890-abc123def456.apps.googleusercontent.com'
 export const GOOGLE_WEB_CLIENT_ID = '';
+
+// Free Jamendo Client ID from https://devportal.jamendo.com (adds Jamendo to Search).
+export const JAMENDO_CLIENT_ID = '';

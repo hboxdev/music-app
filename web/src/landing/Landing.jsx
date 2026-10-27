@@ -26,17 +26,17 @@ const steps = [
 
 const features = [
   ['⟳', 'Synced with YouTube', 'Your own playlists and liked videos, kept up to date with one tap.'],
-  ['🔗', 'Paste any link', 'Add a single song, a playlist or a YouTube Mix from a copied link.'],
+  ['🔗', 'Paste any link', 'Add songs from YouTube, Audius, Jamendo or a direct MP3 link, or a whole YouTube playlist.'],
   ['⤮', 'Made for listening', 'Play queue, shuffle, repeat, search and your own playlists.'],
   ['📱', 'Phone and web', 'An Android app and a web app that work the same way.'],
   ['🔒', 'Read-only access', 'TubeTunes never posts, deletes or changes anything on your account.'],
-  ['▶', 'Official YouTube player', 'Songs stream through YouTube itself, so artists still get their views.'],
+  ['🔍', 'Search free music', 'Find full songs from Audius and Jamendo. They keep playing with your screen locked.'],
 ];
 
 const faqs = [
   [
     'Does TubeTunes download songs as MP3?',
-    'No. Songs play through YouTube’s official player, so you need an internet connection. Saving YouTube audio as files breaks YouTube’s rules and often the music’s copyright.',
+    'No. Songs stream, so you need an internet connection. YouTube songs play through YouTube’s official player; saving YouTube audio as files breaks YouTube’s rules and often the music’s copyright.',
   ],
   [
     'Why does it ask me to sign in with Google?',
@@ -52,7 +52,11 @@ const faqs = [
   ],
   [
     'Does music keep playing when I lock my phone?',
-    'No. YouTube’s player stops in the background unless you have YouTube Premium in YouTube’s own app.',
+    'Songs from Search (Audius and Jamendo) and direct audio links do, with play, pause and skip on the lock screen. YouTube songs can’t: YouTube’s player stops when the screen locks, so TubeTunes keeps the screen on while they play.',
+  ],
+  [
+    'Where do the songs in Search come from?',
+    'From Audius and Jamendo, two free services where artists share their music for streaming. You’ll find lots of independent artists there; big label releases usually aren’t available.',
   ],
   ['Is it free?', 'Yes.'],
 ];

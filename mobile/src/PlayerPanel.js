@@ -1,10 +1,11 @@
 import { forwardRef, useImperativeHandle, useRef, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import Slider from '@react-native-community/slider';
 import YouTubeEngine from './YouTubeEngine';
 import { colors, fmtTime } from './theme';
+import { SOURCE_LABELS, artworkOf, isYouTube, sourceOf } from './sources';
 
 // Mini player bar that expands to a full-screen player.
 // The video view keeps the same place in the tree in both modes,
@@ -26,6 +27,8 @@ const PlayerPanel = forwardRef(function PlayerPanel(
     onReady,
     onStateChange,
     onError,
+    audioTime, // { t, d } while a non-YouTube song plays, otherwise null
+    onSeekAudio,
   },
   ref
 ) {
@@ -51,8 +54,24 @@ const PlayerPanel = forwardRef(function PlayerPanel(
     getTime: () => timeRef.current.t,
   }));
 
-  const progress = time.d ? Math.min(1, time.t / time.d) : 0;
-  const shownTime = seekValue ?? time.t;
+  const audioSong = !!song && !isYouTube(song);
+  const art = audioSong ? artworkOf(song) : null;
+  const t = audioSong && audioTime ? audioTime : time;
+  const progress = t.d ? Math.min(1, t.t / t.d) : 0;
+  const shownTime = seekValue ?? t.t;
+  const subtitle = song
+    ? `${song.artist || 'Unknown artist'}${audioSong ? ` · ${SOURCE_LABELS[sourceOf(song)]}` : ''}`
+    : 'Pick a song to start';
+
+  const cover = audioSong ? (
+    <View style={styles.cover} pointerEvents="none">
+      {art ? (
+        <Image source={{ uri: art }} style={styles.coverImg} resizeMode="cover" />
+      ) : (
+        <Ionicons name="musical-notes" size={expanded ? 64 : 24} color="#fff" />
+      )}
+    </View>
+  ) : null;
 
   return (
     <View
@@ -85,6 +104,7 @@ const PlayerPanel = forwardRef(function PlayerPanel(
             onError={onError}
             onTime={(v) => seekValue === null && updateTime(v)}
           />
+          {cover}
         </View>
 
         {expanded ? (
@@ -93,28 +113,31 @@ const PlayerPanel = forwardRef(function PlayerPanel(
               {song ? song.title : 'Nothing playing'}
             </Text>
             <Text style={styles.fullArtist} numberOfLines={1}>
-              {song ? song.artist || 'Unknown artist' : 'Pick a song to start'}
+              {subtitle}
             </Text>
 
             <Slider
               style={styles.slider}
               minimumValue={0}
-              maximumValue={time.d || 1}
+              maximumValue={t.d || 1}
               value={shownTime}
               minimumTrackTintColor={colors.accent}
               maximumTrackTintColor={colors.line}
               thumbTintColor={colors.accent}
               onValueChange={setSeekValue}
               onSlidingComplete={(v) => {
-                engine.current && engine.current.seekTo(v);
-                updateTime({ t: v, d: time.d });
+                if (audioSong) onSeekAudio(v);
+                else {
+                  engine.current && engine.current.seekTo(v);
+                  updateTime({ t: v, d: time.d });
+                }
                 setSeekValue(null);
               }}
               disabled={!song}
             />
             <View style={styles.times}>
               <Text style={styles.time}>{fmtTime(shownTime)}</Text>
-              <Text style={styles.time}>{fmtTime(time.d)}</Text>
+              <Text style={styles.time}>{fmtTime(t.d)}</Text>
             </View>
 
             <View style={styles.buttons}>
@@ -143,7 +166,7 @@ const PlayerPanel = forwardRef(function PlayerPanel(
                 {song ? song.title : 'Nothing playing'}
               </Text>
               <Text style={styles.miniArtist} numberOfLines={1}>
-                {song ? song.artist || 'Unknown artist' : 'Pick a song to start'}
+                {subtitle}
               </Text>
             </Pressable>
             <Pressable onPress={onPlayPause} hitSlop={8} style={styles.miniBtn}>
@@ -177,6 +200,13 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   videoMini: { width: 112, height: 63, borderRadius: 8, overflow: 'hidden', backgroundColor: '#000' },
+  cover: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: colors.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  coverImg: { width: '100%', height: '100%' },
   miniText: { flex: 1, minWidth: 0 },
   miniTitle: { color: colors.text, fontWeight: '600', fontSize: 14 },
   miniArtist: { color: colors.muted, fontSize: 12, marginTop: 2 },
