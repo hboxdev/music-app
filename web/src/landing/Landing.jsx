@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 
-// Put the Android build here on the server (see README)
-const APK_URL = 'downloads/tubetunes.apk';
+// Android download: either a full link set in VITE_APK_URL (for example a GitHub
+// Release asset), or a file uploaded next to the site at downloads/tubetunes.apk
+const EXTERNAL_APK_URL = import.meta.env.VITE_APK_URL || '';
+const APK_URL = EXTERNAL_APK_URL || 'downloads/tubetunes.apk';
 const WEB_APP_URL = 'app/';
 
 const steps = [
@@ -56,8 +58,10 @@ const faqs = [
 ];
 
 function useApkAvailable() {
-  const [state, setState] = useState('checking');
+  // An external link can't be checked from the browser, so it is trusted as set
+  const [state, setState] = useState(EXTERNAL_APK_URL ? 'yes' : 'checking');
   useEffect(() => {
+    if (EXTERNAL_APK_URL) return;
     fetch(APK_URL, { method: 'HEAD' })
       .then((r) => {
         const type = r.headers.get('content-type') || '';

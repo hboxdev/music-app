@@ -54,6 +54,22 @@ npm run dev        # local preview at http://localhost:5173
 npm run build      # production files go to web/dist/
 ```
 
+### Deploy on Vercel (recommended)
+
+1. Sign in at <https://vercel.com> with GitHub and click **Add New → Project**.
+2. Import the `hboxdev/music-app` repository.
+3. Set **Root Directory** to `web`. Vercel reads the rest from `web/vercel.json` (Vite, `npm run build`, output `dist`).
+4. Under **Environment Variables** add:
+   - `VITE_GOOGLE_CLIENT_ID` — your Google Web Client ID
+   - `VITE_APK_URL` — `https://github.com/hboxdev/music-app/releases/latest/download/tubetunes.apk` (see the Android section)
+5. Click **Deploy**. Every push to `main` redeploys automatically.
+6. To use your own domain: Project → Settings → **Domains** → add it, then create the DNS record Vercel shows.
+7. Add the Vercel address (for example `https://music-app.vercel.app`) and your domain to the Google **Web client**'s Authorized JavaScript origins. Add the domain to the consent screen's authorized domains too.
+
+Changing an environment variable needs a redeploy (Deployments → ⋯ → Redeploy).
+
+### Or upload to any hosting
+
 Upload **everything inside `web/dist/`** to your domain's web root (`public_html`). The site works from the root or any sub-folder.
 
 ## 3. Android app
@@ -75,7 +91,10 @@ cd mobile
 eas build --platform android --profile preview
 ```
 
-When the build finishes, download the `.apk`, rename it to `tubetunes.apk` and upload it to your site at **`/downloads/tubetunes.apk`**. The website's download button checks for that file and turns on automatically.
+When the build finishes, download the `.apk` and rename it to `tubetunes.apk`. Then either:
+
+- **GitHub Release (best with Vercel):** on GitHub open the repo → **Releases → Draft a new release**, create a tag such as `v1.0.0`, attach `tubetunes.apk` and publish. The link `https://github.com/hboxdev/music-app/releases/latest/download/tubetunes.apk` always points to the newest release, so set it once as `VITE_APK_URL`. The repo must be **public** for visitors to download from it.
+- **Own hosting:** upload it next to the website at `/downloads/tubetunes.apk`. The download button finds it automatically.
 
 After the first build, add its SHA-1 to the Android OAuth client (step 1.5). Sign-in fails until you do.
 
