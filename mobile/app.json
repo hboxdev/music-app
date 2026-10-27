@@ -1,0 +1,41 @@
+{
+  "expo": {
+    "name": "TubeTunes",
+    "slug": "music-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#121216",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "digital.hbox.tubetunes"
+    },
+    "android": {
+      "package": "digital.hbox.tubetunes",
+      "adaptiveIcon": {
+        "backgroundColor": "#121216",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      }
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "0e8c6d73-636b-421e-b003-4ed8c877655e"
+      }
+    },
+    "plugins": [
+      "expo-font",
+      [
+        "@react-native-google-signin/google-signin",
+        {
+          "iosUrlScheme": "com.googleusercontent.apps.REPLACE-WITH-IOS-CLIENT-ID"
+        }
+      ]
+    ]
+  }
+}

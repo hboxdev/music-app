@@ -1,0 +1,1019 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  BackHandler,
+  FlatList,
+  Image,
+  KeyboardAvoidingView,
+  Linking,
+  Modal,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
+import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { StatusBar } from 'expo-status-bar';
+import * as Clipboard from 'expo-clipboard';
+import { Ionicons } from '@expo/vector-icons';
+
+import { colors } from './src/theme';
+import { emptyLibrary, loadLibrary, saveLibrary } from './src/storage';
+import {
+  extractPlaylistId,
+  extractVideoId,
+  fetchManyVideoInfo,
+  fetchPlaylistTitle,
+  fetchVideoInfo,
+  thumbUrl,
+} from './src/youtube';
+import { mergeSync, removeSynced, syncYouTube } from './src/ytsync';
+import { dropToken, getAccessToken, googleAvailable, signOutGoogle } from './src/google';
+import SongRow from './src/SongRow';
+import SongMenu from './src/SongMenu';
+import PromptModal from './src/PromptModal';
+import PlayerPanel from './src/PlayerPanel';
+import YouTubeEngine from './src/YouTubeEngine';
+
+export default function App() {
+  return (
+    <SafeAreaProvider>
+      <StatusBar style="light" />
+      <Main />
+    </SafeAreaProvider>
+  );
+}
+
+function shuffled(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+// Alert with buttons that resolves to the chosen button's value (null if dismissed)
+function choose(title, message, buttons) {
+  return new Promise((resolve) => {
+    Alert.alert(
+      title,
+      message,
+      buttons.map((b) => ({ text: b.text, style: b.style, onPress: () => resolve(b.value) })),
+      { cancelable: true, onDismiss: () => resolve(null) }
+    );
+  });
+}
+
+const ERROR_REASONS = {
+  2: 'invalid video',
+  5: 'player error',
+  100: 'video removed or private',
+  101: 'the uploader blocks playing it in apps',
+  150: 'the uploader blocks playing it in apps',
+};
+
+function Main() {
+  const insets = useSafeAreaInsets();
+
+  // Library
+  const [lib, setLib] = useState(emptyLibrary);
+  const [loaded, setLoaded] = useState(false);
+
+  // Navigation
+  const [tab, setTab] = useState('songs'); // songs | playlists
+  const [openPlaylistId, setOpenPlaylistId] = useState(null);
+  const [filter, setFilter] = useState('');
+
+  // Playback
+  const [queue, setQueue] = useState([]);
+  const [index, setIndex] = useState(-1);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [shuffle, setShuffle] = useState(false);
+  const [repeat, setRepeat] = useState('off'); // off | all | one
+  const [expanded, setExpanded] = useState(false);
+
+  // Dialogs
+  const [menuSong, setMenuSong] = useState(null);
+  const [prompt, setPrompt] = useState(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [linkText, setLinkText] = useState('');
+  const [busy, setBusy] = useState(null);
+  const [toast, setToast] = useState(null);
+
+  // Playlist import uses a second, invisible player
+  const [importListId, setImportListId] = useState(null);
+  const importEngine = useRef(null);
+  const importResolve = useRef(null);
+
+  const player = useRef(null);
+  const playerReady = useRef(false);
+  const pendingVideo = useRef(null);
+  const toastTimer = useRef(null);
+  const nextRef = useRef(null);
+
+  useEffect(() => {
+    loadLibrary().then((data) => {
+      setLib(data);
+      setLoaded(true);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (loaded) saveLibrary(lib);
+  }, [lib, loaded]);
+
+  const showToast = useCallback((msg) => {
+    setToast(msg);
+    clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 3200);
+  }, []);
+
+  // ---------- Derived data ----------
+  const songMap = useMemo(() => Object.fromEntries(lib.songs.map((s) => [s.id, s])), [lib.songs]);
+  const openPlaylist = lib.playlists.find((p) => p.id === openPlaylistId) || null;
+
+  const viewSongs = useMemo(() => {
+    const list = openPlaylist
+      ? openPlaylist.songIds.map((id) => songMap[id]).filter(Boolean)
+      : lib.songs;
+    const q = filter.trim().toLowerCase();
+    return q
+      ? list.filter((s) => s.title.toLowerCase().includes(q) || (s.artist || '').toLowerCase().includes(q))
+      : list;
+  }, [openPlaylist, songMap, lib.songs, filter]);
+
+  const current = queue[index] || null;
+
+  // ---------- Playback ----------
+  const loadVideo = (id) => {
+    if (playerReady.current) player.current.load(id);
+    else pendingVideo.current = id;
+  };
+
+  const startQueue = (songs, start = 0, forceShuffle = shuffle) => {
+    if (!songs.length) return;
+    let q;
+    let i;
+    if (forceShuffle) {
+      q = [songs[start], ...shuffled(songs.filter((_, k) => k !== start))];
+      i = 0;
+    } else {
+      q = songs.slice();
+      i = start;
+    }
+    setQueue(q);
+    setIndex(i);
+    loadVideo(q[i].id);
+  };
+
+  const goTo = (i) => {
+    setIndex(i);
+    loadVideo(queue[i].id);
+  };
+
+  const next = (auto = false) => {
+    if (!queue.length) return;
+    if (index < queue.length - 1) goTo(index + 1);
+    else if (repeat === 'all' || !auto) goTo(0);
+    else setIsPlaying(false);
+  };
+  nextRef.current = next;
+
+  const prev = () => {
+    if (!queue.length) return;
+    if (player.current.getTime() > 3) {
+      player.current.seekTo(0);
+      return;
+    }
+    goTo(index > 0 ? index - 1 : queue.length - 1);
+  };
+
+  const playPause = () => {
+    if (!current) {
+      startQueue(viewSongs, 0);
+      return;
+    }
+    if (isPlaying) player.current.pause();
+    else player.current.play();
+  };
+
+  const toggleShuffle = () => {
+    const on = !shuffle;
+    setShuffle(on);
+    // Reshuffle what's left, keeping the current song first
+    if (on && current) {
+      setQueue([current, ...shuffled(queue.filter((_, k) => k !== index))]);
+      setIndex(0);
+    }
+  };
+
+  const cycleRepeat = () => setRepeat((r) => ({ off: 'all', all: 'one', one: 'off' }[r]));
+
+  const onPlayerReady = () => {
+    playerReady.current = true;
+    if (pendingVideo.current) {
+      player.current.load(pendingVideo.current);
+      pendingVideo.current = null;
+    }
+  };
+
+  const onPlayerState = (s) => {
+    if (s === 1) setIsPlaying(true);
+    else if (s === 2 || s === 0 || s === 5) setIsPlaying(false);
+    if (s === 0) {
+      if (repeat === 'one') {
+        player.current.seekTo(0);
+        player.current.play();
+      } else {
+        next(true);
+      }
+    }
+  };
+
+  const onPlayerError = (code) => {
+    const name = current ? `"${current.title}"` : 'this video';
+    showToast(`Can't play ${name}: ${ERROR_REASONS[code] || 'error ' + code}. Skipping.`);
+    setTimeout(() => nextRef.current && nextRef.current(true), 1500);
+  };
+
+  // ---------- YouTube sync ----------
+  const runSync = async (interactive) => {
+    let token = await getAccessToken({ interactive });
+    if (interactive) setBusy('Connecting to YouTube…');
+    try {
+      return await syncYouTube(token, interactive ? setBusy : undefined);
+    } catch (e) {
+      if (e.status !== 401) throw e;
+      // Token expired: get a fresh one and try once more
+      await dropToken(token);
+      token = await getAccessToken({ interactive });
+      return await syncYouTube(token, interactive ? setBusy : undefined);
+    }
+  };
+
+  const syncNow = async () => {
+    try {
+      const result = await runSync(true);
+      setLib((l) => mergeSync(l, result));
+      const songs = result.playlists.reduce((n, p) => n + p.videos.length, 0);
+      showToast(`Synced ${result.playlists.length} playlists (${songs} songs) from YouTube`);
+    } catch (e) {
+      if (!/cancel/i.test(e.message)) Alert.alert('YouTube sync', e.message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const disconnect = () =>
+    Alert.alert('Disconnect YouTube?', 'Your YouTube playlists will be removed from TubeTunes. Songs you added yourself stay.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Disconnect',
+        style: 'destructive',
+        onPress: () => {
+          signOutGoogle();
+          if (openPlaylist && openPlaylist.source === 'youtube') setOpenPlaylistId(null);
+          setLib(removeSynced);
+        },
+      },
+    ]);
+
+  // Quietly refresh YouTube playlists each time the app starts
+  const autoSynced = useRef(false);
+  useEffect(() => {
+    if (!loaded || autoSynced.current || !lib.account || !googleAvailable) return;
+    autoSynced.current = true;
+    runSync(false)
+      .then((result) => setLib((l) => mergeSync(l, result)))
+      .catch(() => {});
+  }, [loaded, lib.account]);
+
+  // ---------- Library changes ----------
+  const addToOpenPlaylist = (playlists, songId) =>
+    openPlaylist && openPlaylist.source !== 'youtube'
+      ? playlists.map((p) =>
+          p.id === openPlaylistId && !p.songIds.includes(songId)
+            ? { ...p, songIds: [...p.songIds, songId] }
+            : p
+        )
+      : playlists;
+
+  const addSong = async (videoId) => {
+    if (songMap[videoId]) {
+      setLib((l) => ({ ...l, playlists: addToOpenPlaylist(l.playlists, videoId) }));
+      showToast(
+        openPlaylistId
+          ? `"${songMap[videoId].title}" added to this playlist`
+          : `"${songMap[videoId].title}" is already in your library`
+      );
+      return;
+    }
+    setBusy('Adding song…');
+    const info = await fetchVideoInfo(videoId);
+    setBusy(null);
+    if (!info) {
+      Alert.alert("Couldn't add song", 'That video may be private, removed, or blocked from playing in apps.');
+      return;
+    }
+    const song = { id: videoId, ...info, addedAt: Date.now() };
+    setLib((l) => ({
+      songs: [song, ...l.songs.filter((s) => s.id !== videoId)],
+      playlists: addToOpenPlaylist(l.playlists, videoId),
+    }));
+    showToast(`Added "${info.title}"`);
+  };
+
+  const readPlaylistIds = (listId) =>
+    new Promise((resolve) => {
+      const timer = setTimeout(() => resolve([]), 25000);
+      importResolve.current = (ids) => {
+        clearTimeout(timer);
+        resolve(ids);
+      };
+      setImportListId(listId);
+    });
+
+  const importPlaylist = async (listId) => {
+    setBusy('Reading playlist…');
+    const ids = await readPlaylistIds(listId);
+    setImportListId(null);
+    importResolve.current = null;
+
+    const unique = [...new Set(ids)];
+    if (!unique.length) {
+      setBusy(null);
+      Alert.alert("Couldn't read playlist", 'It may be private or empty.');
+      return;
+    }
+
+    const have = new Set(lib.songs.map((s) => s.id));
+    const missing = unique.filter((id) => !have.has(id));
+    setBusy(`Getting song details… 0/${missing.length}`);
+    const infos = await fetchManyVideoInfo(missing, (done, total) =>
+      setBusy(`Getting song details… ${done}/${total}`)
+    );
+    const name =
+      (await fetchPlaylistTitle(listId)) || (listId.startsWith('RD') ? 'My Mix' : 'Imported playlist');
+
+    const now = Date.now();
+    const newSongs = missing
+      .filter((id) => infos[id])
+      .map((id, k) => ({ id, ...infos[id], addedAt: now - k }));
+    const playlist = {
+      id: `pl_${now}`,
+      name,
+      songIds: unique.filter((id) => have.has(id) || infos[id]),
+    };
+
+    setLib((l) => {
+      const existing = new Set(l.songs.map((s) => s.id));
+      return {
+        songs: [...newSongs.filter((s) => !existing.has(s.id)), ...l.songs],
+        playlists: [...l.playlists, playlist],
+      };
+    });
+    setBusy(null);
+
+    const skipped = unique.length - playlist.songIds.length;
+    showToast(
+      `Imported "${name}": ${newSongs.length} new song${newSongs.length === 1 ? '' : 's'}` +
+        (skipped ? `, ${skipped} unavailable` : '')
+    );
+    setFilter('');
+    setTab('playlists');
+    setOpenPlaylistId(playlist.id);
+  };
+
+  const addFromLink = async (text) => {
+    const url = text.trim();
+    if (!url) return;
+    const listId = extractPlaylistId(url);
+    const videoId = extractVideoId(url);
+
+    if (listId) {
+      const choice = videoId
+        ? await choose('This link is part of a playlist', 'What do you want to add?', [
+            { text: 'Cancel', style: 'cancel', value: null },
+            { text: 'Just this song', value: 'song' },
+            { text: 'Whole playlist', value: 'playlist' },
+          ])
+        : 'playlist';
+      if (choice === 'playlist') return importPlaylist(listId);
+      if (choice !== 'song') return;
+    }
+
+    if (!videoId) {
+      Alert.alert('Not a YouTube link', 'Copy a link from the YouTube app (Share → Copy link) and paste it here.');
+      return;
+    }
+    await addSong(videoId);
+  };
+
+  const submitLink = () => {
+    const text = linkText;
+    setAddOpen(false);
+    setLinkText('');
+    addFromLink(text);
+  };
+
+  const pasteLink = async () => {
+    const text = await Clipboard.getStringAsync();
+    if (text) setLinkText(text.trim());
+  };
+
+  const createPlaylist = (songIds = [], then) =>
+    setPrompt({
+      title: 'New playlist',
+      fields: [{ key: 'name', label: 'Name', value: '' }],
+      submitLabel: 'Create',
+      onSubmit: ({ name }) => {
+        const pl = { id: `pl_${Date.now()}`, name: name.trim(), songIds };
+        setLib((l) => ({ ...l, playlists: [...l.playlists, pl] }));
+        then && then(pl);
+      },
+    });
+
+  const renamePlaylist = (pl) =>
+    setPrompt({
+      title: 'Rename playlist',
+      fields: [{ key: 'name', label: 'Name', value: pl.name }],
+      onSubmit: ({ name }) =>
+        setLib((l) => ({
+          ...l,
+          playlists: l.playlists.map((p) => (p.id === pl.id ? { ...p, name: name.trim() } : p)),
+        })),
+    });
+
+  const deletePlaylist = (pl) =>
+    Alert.alert('Delete playlist?', `"${pl.name}" will be deleted. The songs stay in your library.`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () => {
+          setOpenPlaylistId(null);
+          setLib((l) => ({ ...l, playlists: l.playlists.filter((p) => p.id !== pl.id) }));
+        },
+      },
+    ]);
+
+  // ---------- Song menu actions ----------
+  const playNext = (song) => {
+    if (!current) {
+      startQueue([song], 0, false);
+      return;
+    }
+    setQueue((q) => [...q.slice(0, index + 1), song, ...q.slice(index + 1)]);
+    showToast(`"${song.title}" will play next`);
+  };
+
+  const editSong = (song) =>
+    setPrompt({
+      title: 'Edit song',
+      fields: [
+        { key: 'title', label: 'Title', value: song.title },
+        { key: 'artist', label: 'Artist', value: song.artist },
+      ],
+      onSubmit: ({ title, artist }) => {
+        const patch = { title: title.trim(), artist: (artist || '').trim() };
+        setLib((l) => ({ ...l, songs: l.songs.map((s) => (s.id === song.id ? { ...s, ...patch } : s)) }));
+        setQueue((q) => q.map((s) => (s.id === song.id ? { ...s, ...patch } : s)));
+      },
+    });
+
+  const addToPlaylist = (song, playlistId) => {
+    setLib((l) => ({
+      ...l,
+      playlists: l.playlists.map((p) =>
+        p.id === playlistId && !p.songIds.includes(song.id) ? { ...p, songIds: [...p.songIds, song.id] } : p
+      ),
+    }));
+    const pl = lib.playlists.find((p) => p.id === playlistId);
+    showToast(`Added to "${pl ? pl.name : 'playlist'}"`);
+  };
+
+  const removeFromPlaylist = (song) =>
+    setLib((l) => ({
+      ...l,
+      playlists: l.playlists.map((p) =>
+        p.id === openPlaylistId ? { ...p, songIds: p.songIds.filter((id) => id !== song.id) } : p
+      ),
+    }));
+
+  const deleteSong = (song) =>
+    Alert.alert('Delete song?', `Remove "${song.title}" from your library and all playlists?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () =>
+          setLib((l) => ({
+            songs: l.songs.filter((s) => s.id !== song.id),
+            playlists: l.playlists.map((p) => ({ ...p, songIds: p.songIds.filter((id) => id !== song.id) })),
+          })),
+      },
+    ]);
+
+  // Android back button: collapse player, then leave the playlist
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (expanded) {
+        setExpanded(false);
+        return true;
+      }
+      if (openPlaylistId) {
+        setOpenPlaylistId(null);
+        setFilter('');
+        return true;
+      }
+      return false;
+    });
+    return () => sub.remove();
+  }, [expanded, openPlaylistId]);
+
+  // ---------- Rendering ----------
+  const renderSong = ({ item, index: i }) => (
+    <SongRow
+      song={item}
+      number={i + 1}
+      playing={!!current && current.id === item.id}
+      onPress={() => startQueue(viewSongs, i)}
+      onMore={() => setMenuSong(item)}
+    />
+  );
+
+  const showingSongs = tab === 'songs' || openPlaylist;
+
+  const listHeader = (
+    <View>
+      {openPlaylist ? (
+        <View style={styles.plHead}>
+          <Text style={styles.eyebrow}>{openPlaylist.source === 'youtube' ? 'YouTube playlist' : 'Playlist'}</Text>
+          <Text style={styles.h1} numberOfLines={2}>{openPlaylist.name}</Text>
+          <Text style={styles.muted}>
+            {openPlaylist.songIds.length} song{openPlaylist.songIds.length === 1 ? '' : 's'}
+          </Text>
+        </View>
+      ) : null}
+      <View style={styles.actions}>
+        <Pressable style={styles.playAll} onPress={() => startQueue(viewSongs, 0, false)} disabled={!viewSongs.length}>
+          <Ionicons name="play" size={18} color="#fff" />
+          <Text style={styles.playAllText}>Play</Text>
+        </Pressable>
+        <Pressable
+          style={styles.ghostBtn}
+          disabled={!viewSongs.length}
+          onPress={() => {
+            setShuffle(true);
+            startQueue(viewSongs, Math.floor(Math.random() * viewSongs.length), true);
+          }}
+        >
+          <Ionicons name="shuffle" size={18} color={colors.text} />
+          <Text style={styles.ghostText}>Shuffle</Text>
+        </Pressable>
+        {openPlaylist && openPlaylist.source !== 'youtube' ? (
+          <>
+            <Pressable style={styles.iconBtn} onPress={() => renamePlaylist(openPlaylist)}>
+              <Ionicons name="create-outline" size={20} color={colors.text} />
+            </Pressable>
+            <Pressable style={styles.iconBtn} onPress={() => deletePlaylist(openPlaylist)}>
+              <Ionicons name="trash-outline" size={20} color={colors.danger} />
+            </Pressable>
+          </>
+        ) : null}
+      </View>
+      <View style={styles.search}>
+        <Ionicons name="search" size={16} color={colors.muted} />
+        <TextInput
+          style={styles.searchInput}
+          value={filter}
+          onChangeText={setFilter}
+          placeholder="Search"
+          placeholderTextColor={colors.muted}
+          clearButtonMode="while-editing"
+        />
+      </View>
+    </View>
+  );
+
+  const emptySongs = (
+    <View style={styles.empty}>
+      <Ionicons name="musical-notes-outline" size={48} color={colors.muted} />
+      <Text style={styles.emptyTitle}>{filter ? 'No matches' : 'No songs here yet'}</Text>
+      {!filter ? (
+        <Text style={styles.emptyText}>
+          {openPlaylist
+            ? 'Tap + to paste a link into this playlist, or use a song\'s ⋮ menu → Add to playlist.'
+            : 'In the YouTube app, tap Share → Copy link, then tap + here and paste it. Playlist links import every song.'}
+        </Text>
+      ) : null}
+    </View>
+  );
+
+  return (
+    <View style={styles.root}>
+      <View style={[styles.main, { paddingTop: insets.top }]}>
+        {/* Top bar */}
+        <View style={styles.topbar}>
+          {openPlaylist ? (
+            <Pressable
+              hitSlop={12}
+              onPress={() => {
+                setOpenPlaylistId(null);
+                setFilter('');
+              }}
+              style={styles.back}
+            >
+              <Ionicons name="chevron-back" size={26} color={colors.text} />
+              <Text style={styles.backText}>Playlists</Text>
+            </Pressable>
+          ) : (
+            <View style={styles.brand}>
+              <View style={styles.logo}>
+                <Ionicons name="musical-notes" size={18} color="#fff" />
+              </View>
+              <Text style={styles.brandText}>TubeTunes</Text>
+            </View>
+          )}
+          <Pressable style={styles.addBtn} onPress={() => setAddOpen(true)} hitSlop={8}>
+            <Ionicons name="add" size={26} color="#fff" />
+          </Pressable>
+        </View>
+
+        {/* Tabs */}
+        {!openPlaylist ? (
+          <View style={styles.tabs}>
+            {[
+              ['songs', `Songs · ${lib.songs.length}`],
+              ['playlists', `Playlists · ${lib.playlists.length}`],
+            ].map(([key, label]) => (
+              <Pressable
+                key={key}
+                onPress={() => {
+                  setTab(key);
+                  setFilter('');
+                }}
+                style={[styles.tab, tab === key && styles.tabActive]}
+              >
+                <Text style={[styles.tabText, tab === key && styles.tabTextActive]}>{label}</Text>
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
+
+        {showingSongs ? (
+          <FlatList
+            data={viewSongs}
+            keyExtractor={(s) => s.id}
+            renderItem={renderSong}
+            ListHeaderComponent={listHeader}
+            ListEmptyComponent={loaded ? emptySongs : null}
+            contentContainerStyle={styles.listContent}
+            keyboardShouldPersistTaps="handled"
+            extraData={current && current.id}
+          />
+        ) : (
+          <FlatList
+            data={lib.playlists}
+            keyExtractor={(p) => p.id}
+            contentContainerStyle={styles.listContent}
+            ListHeaderComponent={
+              <View>
+                <View style={styles.ytCard}>
+                  <View style={styles.ytHead}>
+                    <Ionicons name="logo-youtube" size={26} color="#ff0000" />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.plName} numberOfLines={1}>
+                        {lib.account ? lib.account.name : 'Your YouTube playlists'}
+                      </Text>
+                      <Text style={styles.muted}>
+                        {lib.account
+                          ? `Synced ${lib.syncedAt ? new Date(lib.syncedAt).toLocaleString() : ''}`
+                          : 'Sign in with Google to bring them here'}
+                      </Text>
+                    </View>
+                  </View>
+                  <View style={styles.ytButtons}>
+                    <Pressable style={styles.playAll} onPress={syncNow}>
+                      <Ionicons name={lib.account ? 'sync' : 'logo-google'} size={16} color="#fff" />
+                      <Text style={styles.playAllText}>{lib.account ? 'Sync now' : 'Connect YouTube'}</Text>
+                    </Pressable>
+                    {lib.account ? (
+                      <Pressable style={styles.ghostBtn} onPress={disconnect}>
+                        <Text style={styles.ghostText}>Disconnect</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+                </View>
+                <Pressable style={styles.plRow} onPress={() => createPlaylist()}>
+                  <View style={[styles.plThumb, styles.plNew]}>
+                    <Ionicons name="add" size={26} color={colors.accent} />
+                  </View>
+                  <Text style={styles.plName}>New playlist</Text>
+                </Pressable>
+              </View>
+            }
+            renderItem={({ item }) => (
+              <Pressable
+                style={({ pressed }) => [styles.plRow, pressed && { backgroundColor: colors.raised }]}
+                onPress={() => {
+                  setFilter('');
+                  setOpenPlaylistId(item.id);
+                }}
+              >
+                {item.songIds[0] ? (
+                  <Image source={{ uri: thumbUrl(item.songIds[0]) }} style={styles.plThumb} />
+                ) : (
+                  <View style={[styles.plThumb, styles.plNew]}>
+                    <Ionicons name="musical-notes" size={22} color={colors.muted} />
+                  </View>
+                )}
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.plName} numberOfLines={1}>{item.name}</Text>
+                  <View style={styles.plMeta}>
+                    {item.source === 'youtube' ? <Ionicons name="logo-youtube" size={13} color="#ff0000" /> : null}
+                    <Text style={styles.muted}>
+                      {item.songIds.length} song{item.songIds.length === 1 ? '' : 's'}
+                    </Text>
+                  </View>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+              </Pressable>
+            )}
+          />
+        )}
+
+        {toast ? (
+          <View style={styles.toast} pointerEvents="none">
+            <Text style={styles.toastText}>{toast}</Text>
+          </View>
+        ) : null}
+      </View>
+
+      <PlayerPanel
+        ref={player}
+        song={current}
+        isPlaying={isPlaying}
+        expanded={expanded}
+        onExpand={() => setExpanded(true)}
+        onCollapse={() => setExpanded(false)}
+        shuffle={shuffle}
+        repeat={repeat}
+        onToggleShuffle={toggleShuffle}
+        onCycleRepeat={cycleRepeat}
+        onPlayPause={playPause}
+        onNext={() => next()}
+        onPrev={prev}
+        onReady={onPlayerReady}
+        onStateChange={onPlayerState}
+        onError={onPlayerError}
+      />
+
+      {/* Invisible player used only to read playlist contents */}
+      {importListId ? (
+        <View style={styles.importEngine} pointerEvents="none">
+          <YouTubeEngine
+            ref={importEngine}
+            onReady={() => importEngine.current && importEngine.current.readPlaylist(importListId)}
+            onPlaylistIds={(ids) => importResolve.current && importResolve.current(ids)}
+          />
+        </View>
+      ) : null}
+
+      {/* Add link dialog */}
+      <Modal transparent animationType="fade" visible={addOpen} onRequestClose={() => setAddOpen(false)}>
+        <KeyboardAvoidingView style={styles.backdrop} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setAddOpen(false)} />
+          <View style={styles.dialog}>
+            <Text style={styles.dialogTitle}>
+              {openPlaylist && openPlaylist.source !== 'youtube' ? `Add to "${openPlaylist.name}"` : 'Add from YouTube'}
+            </Text>
+            <Text style={styles.dialogHint}>Paste a link to a song or a whole playlist.</Text>
+            <View style={styles.linkRow}>
+              <TextInput
+                style={styles.linkInput}
+                value={linkText}
+                onChangeText={setLinkText}
+                placeholder="https://youtu.be/…"
+                placeholderTextColor={colors.muted}
+                autoCapitalize="none"
+                autoCorrect={false}
+                autoFocus
+                returnKeyType="done"
+                onSubmitEditing={submitLink}
+              />
+              <Pressable style={styles.pasteBtn} onPress={pasteLink}>
+                <Ionicons name="clipboard-outline" size={18} color={colors.text} />
+                <Text style={styles.ghostText}>Paste</Text>
+              </Pressable>
+            </View>
+            <View style={styles.dialogButtons}>
+              <Pressable style={styles.dialogBtn} onPress={() => setAddOpen(false)}>
+                <Text style={styles.ghostText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.dialogBtn, styles.dialogPrimary, !linkText.trim() && { opacity: 0.5 }]}
+                onPress={submitLink}
+                disabled={!linkText.trim()}
+              >
+                <Text style={styles.playAllText}>Add</Text>
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <SongMenu
+        song={menuSong}
+        playlists={lib.playlists.filter((p) => p.source !== 'youtube')}
+        currentPlaylistId={openPlaylist && openPlaylist.source !== 'youtube' ? openPlaylistId : null}
+        onClose={() => setMenuSong(null)}
+        onPlayNext={playNext}
+        onEdit={editSong}
+        onOpenYouTube={(s) => Linking.openURL(`https://www.youtube.com/watch?v=${s.id}`)}
+        onAddToPlaylist={addToPlaylist}
+        onNewPlaylist={(s) => createPlaylist([s.id], (pl) => showToast(`Added to "${pl.name}"`))}
+        onRemoveFromPlaylist={removeFromPlaylist}
+        onDelete={deleteSong}
+      />
+
+      <PromptModal prompt={prompt} onClose={() => setPrompt(null)} />
+
+      <Modal transparent visible={!!busy} animationType="fade">
+        <View style={styles.backdrop}>
+          <View style={styles.busyBox}>
+            <ActivityIndicator color={colors.accent} size="large" />
+            <Text style={styles.busyText}>{busy}</Text>
+          </View>
+        </View>
+      </Modal>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: colors.bg },
+  main: { flex: 1 },
+
+  topbar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  brand: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  logo: {
+    width: 32,
+    height: 32,
+    borderRadius: 9,
+    backgroundColor: colors.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  brandText: { color: colors.text, fontSize: 22, fontWeight: '800' },
+  back: { flexDirection: 'row', alignItems: 'center', marginLeft: -6 },
+  backText: { color: colors.text, fontSize: 16 },
+  addBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: colors.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  tabs: { flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingBottom: 6 },
+  tab: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: 20, backgroundColor: colors.panel },
+  tabActive: { backgroundColor: colors.text },
+  tabText: { color: colors.text, fontWeight: '600', fontSize: 13 },
+  tabTextActive: { color: colors.bg },
+
+  listContent: { paddingHorizontal: 4, paddingBottom: 24 },
+
+  plHead: { paddingHorizontal: 12, paddingTop: 6 },
+  eyebrow: { color: colors.muted, fontSize: 12, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 1 },
+  h1: { color: colors.text, fontSize: 28, fontWeight: '800', marginTop: 4 },
+  muted: { color: colors.muted, fontSize: 13, marginTop: 2 },
+
+  actions: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, paddingTop: 12 },
+  playAll: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: colors.accent,
+    paddingVertical: 9,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+  },
+  playAllText: { color: '#fff', fontWeight: '700' },
+  ghostBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: colors.panel,
+    paddingVertical: 9,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+  },
+  ghostText: { color: colors.text, fontWeight: '600' },
+  iconBtn: { padding: 9, borderRadius: 20, backgroundColor: colors.panel },
+
+  search: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginHorizontal: 12,
+    marginTop: 12,
+    marginBottom: 6,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: colors.panel,
+  },
+  searchInput: { flex: 1, color: colors.text, paddingVertical: 9, fontSize: 15 },
+
+  empty: { alignItems: 'center', paddingVertical: 48, paddingHorizontal: 32, gap: 8 },
+  emptyTitle: { color: colors.text, fontSize: 17, fontWeight: '700' },
+  emptyText: { color: colors.muted, textAlign: 'center', lineHeight: 20 },
+
+  plRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+  },
+  plThumb: { width: 56, height: 56, borderRadius: 8, backgroundColor: colors.panel },
+  plNew: { alignItems: 'center', justifyContent: 'center' },
+  plName: { color: colors.text, fontSize: 16, fontWeight: '600' },
+  plMeta: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+
+  ytCard: {
+    margin: 12,
+    padding: 16,
+    borderRadius: 16,
+    backgroundColor: colors.panel,
+    gap: 14,
+  },
+  ytHead: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  ytButtons: { flexDirection: 'row', gap: 8 },
+
+  toast: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    bottom: 12,
+    backgroundColor: colors.text,
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+  },
+  toastText: { color: colors.bg, fontWeight: '500' },
+
+  importEngine: { position: 'absolute', top: 0, left: 0, width: 200, height: 113, opacity: 0 },
+
+  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 24 },
+  dialog: { backgroundColor: colors.panel, borderRadius: 16, padding: 20 },
+  dialogTitle: { color: colors.text, fontSize: 18, fontWeight: '700' },
+  dialogHint: { color: colors.muted, marginTop: 4, marginBottom: 14 },
+  linkRow: { flexDirection: 'row', gap: 8 },
+  linkInput: {
+    flex: 1,
+    backgroundColor: colors.bg,
+    color: colors.text,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.line,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 15,
+  },
+  pasteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: colors.raised,
+  },
+  dialogButtons: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 18 },
+  dialogBtn: { paddingVertical: 10, paddingHorizontal: 16, borderRadius: 10 },
+  dialogPrimary: { backgroundColor: colors.accent },
+
+  busyBox: {
+    alignSelf: 'center',
+    backgroundColor: colors.panel,
+    borderRadius: 16,
+    paddingVertical: 24,
+    paddingHorizontal: 28,
+    alignItems: 'center',
+    gap: 14,
+    minWidth: 220,
+  },
+  busyText: { color: colors.text, fontWeight: '600', textAlign: 'center' },
+});
