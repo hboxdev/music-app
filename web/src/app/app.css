@@ -19,6 +19,8 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
+/* No double-tap zoom on phones (tapping Next twice would zoom the page) */
+html { touch-action: manipulation; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 body {
   background: var(--bg);
   color: var(--text);
@@ -802,6 +804,8 @@ h1, h2, h3 { margin: 0; letter-spacing: -0.02em; }
 /* ---------- Phones ---------- */
 @media (max-width: 800px) {
   body { font-size: 15px; }
+  /* Phones zoom into any text box smaller than 16px when it is tapped */
+  input, select, textarea { font-size: 16px !important; }
   .shell { display: block; padding: 0; height: auto; }
   .side { display: none; }
   .main {
