@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { loadLibrary, saveLibrary } from './storage';
 import { getAccessToken, googleConfigured, initGoogle, signOutGoogle } from './google';
 import { loadYouTubeApi, readPlaylistIds } from './player';
@@ -427,6 +427,70 @@ export default function App() {
     return () => document.removeEventListener('visibilitychange', onChange);
   }, [isPlaying, currentIsYouTube, showToast]);
 
+  // ---------- Full-screen "Now playing" ----------
+  const [npOpen, setNpOpen] = useState(false);
+  const frameRef = useRef(null);
+  const slotRef = useRef(null);
+  const npScroller = useRef(null);
+
+  // Opening adds a history entry, so the phone's Back button closes the player
+  const openNowPlaying = () => {
+    if (npOpen) return;
+    setMenu(null);
+    setNpOpen(true);
+    try {
+      history.pushState({ nowPlaying: true }, '');
+    } catch {}
+  };
+  const closeNowPlaying = () => {
+    if (history.state && history.state.nowPlaying) history.back();
+    else setNpOpen(false);
+  };
+  useEffect(() => {
+    const onPop = () => setNpOpen(false);
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+  useEffect(() => {
+    if (!current) setNpOpen(false);
+  }, [current]);
+  useEffect(() => {
+    document.body.style.overflow = npOpen ? 'hidden' : '';
+  }, [npOpen]);
+  handlers.current.closeNowPlaying = () => npOpen && closeNowPlaying();
+
+  // Moves the single video/art box over the big player's empty slot (and back).
+  // Moving it with CSS instead of re-rendering keeps a YouTube video playing.
+  useLayoutEffect(() => {
+    const frame = frameRef.current;
+    if (!frame) return;
+    if (!npOpen || !slotRef.current) {
+      frame.style.cssText = '';
+      return;
+    }
+    const place = () => {
+      const r = slotRef.current.getBoundingClientRect();
+      Object.assign(frame.style, {
+        left: `${r.left}px`,
+        top: `${r.top}px`,
+        width: `${r.width}px`,
+        height: `${r.height}px`,
+      });
+    };
+    place();
+    const ro = new ResizeObserver(place);
+    ro.observe(slotRef.current);
+    const scroller = npScroller.current;
+    window.addEventListener('resize', place);
+    scroller && scroller.addEventListener('scroll', place, { passive: true });
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', place);
+      scroller && scroller.removeEventListener('scroll', place);
+      frame.style.cssText = '';
+    };
+  }, [npOpen, currentIsYouTube, current && current.id]);
+
   // ---------- Keyboard ----------
   useEffect(() => {
     const onKey = (e) => {
@@ -436,7 +500,10 @@ export default function App() {
         handlers.current.playPause();
       } else if (e.shiftKey && e.key === 'ArrowRight') handlers.current.next();
       else if (e.shiftKey && e.key === 'ArrowLeft') handlers.current.prev();
-      else if (e.key === 'Escape') setMenu(null);
+      else if (e.key === 'Escape') {
+        setMenu(null);
+        handlers.current.closeNowPlaying && handlers.current.closeNowPlaying();
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -695,6 +762,94 @@ export default function App() {
 
   const progress = seeking ?? time.t;
   const count = view ? view.songIds.length : lib.songs.length;
+  const subtitle = current
+    ? `${current.artist || 'Unknown artist'}${currentIsYouTube ? '' : ` · ${SOURCE_LABELS[sourceOf(current)]}`}`
+    : 'Pick a song to start';
+  const upNext = queue
+    .map((song, i) => ({ song, i }))
+    .slice(index + 1, index + 31);
+
+  const controlButtons = (
+    <div className="buttons">
+      <button className={`icon-btn toggle ${shuffle ? 'on' : ''}`} title="Shuffle" onClick={toggleShuffle}>⤮</button>
+      <button className="icon-btn" title="Previous" onClick={prev}>⏮</button>
+      <button className="play-btn" title={isPlaying ? 'Pause' : 'Play'} onClick={playPause}>{isPlaying ? '⏸' : '▶'}</button>
+      <button className="icon-btn" title="Next" onClick={() => next()}>⏭</button>
+      <button
+        className={`icon-btn toggle ${repeat !== 'off' ? 'on' : ''}`}
+        title={`Repeat: ${repeat}`}
+        onClick={() => setRepeat((r) => ({ off: 'all', all: 'one', one: 'off' }[r]))}
+      >
+        {repeat === 'one' ? '⟳¹' : '⟳'}
+      </button>
+      <button
+        className={`icon-btn toggle ${keepAwake ? 'on' : ''}`}
+        title={keepAwake ? 'Screen stays on during YouTube songs (tap to turn off)' : 'Keep screen on during YouTube songs'}
+        onClick={() => {
+          setKeepAwake(!keepAwake);
+          showToast(keepAwake ? 'Screen can lock again during YouTube songs' : 'Screen stays on during YouTube songs');
+        }}
+      >
+        ☀
+      </button>
+    </div>
+  );
+
+  const finishSeek = () => {
+    if (seeking !== null) seekTo(seeking);
+    setSeeking(null);
+  };
+
+  const progressRow = (
+    <div className="progress-row">
+      <span className="time">{fmtTime(progress)}</span>
+      <input
+        type="range"
+        min="0"
+        max={time.d || 1}
+        step="0.1"
+        value={progress}
+        onChange={(e) => setSeeking(+e.target.value)}
+        onPointerUp={finishSeek}
+        onKeyUp={finishSeek}
+      />
+      <span className="time">{fmtTime(time.d)}</span>
+    </div>
+  );
+
+  const volumeControl = (
+    <>
+      <button
+        className="icon-btn"
+        title={muted ? 'Unmute' : 'Mute'}
+        onClick={() => {
+          const m = !muted;
+          setMuted(m);
+          audio.current.muted = m;
+          if (playerReady.current) (m ? player.current.mute() : player.current.unMute());
+        }}
+      >
+        {muted || volume === 0 ? '🔇' : '🔊'}
+      </button>
+      <input
+        type="range"
+        min="0"
+        max="100"
+        value={volume}
+        onChange={(e) => {
+          const v = +e.target.value;
+          setVolume(v);
+          setMuted(false);
+          audio.current.volume = v / 100;
+          audio.current.muted = false;
+          if (playerReady.current) {
+            player.current.setVolume(v);
+            player.current.unMute();
+          }
+        }}
+      />
+    </>
+  );
 
   const renderSongs = (songs, { showAdd = false } = {}) => (
     <ol className="song-list">
@@ -941,99 +1096,114 @@ export default function App() {
       </main>
 
       <footer className="player">
-        <div className="now-playing">
-          <div className="video-frame">
-            <div ref={playerEl} />
-            {current && !currentIsYouTube ? (
-              <div className="art-cover">{artworkOf(current) ? <img src={artworkOf(current)} alt="" /> : <span>♪</span>}</div>
-            ) : null}
+        <div
+          className={`now-playing ${current ? 'can-open' : ''}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (current) openNowPlaying();
+          }}
+          title={current ? 'Open player' : undefined}
+        >
+          {/* The one video/art box. It moves into the full player when that is open,
+              so the YouTube video keeps playing without reloading. */}
+          <div className="video-frame-slot">
+            <div className={`video-frame ${npOpen ? 'floating' : ''}`} ref={frameRef}>
+              <div ref={playerEl} />
+              {current && !currentIsYouTube ? (
+                <div className="art-cover">{artworkOf(current) ? <img src={artworkOf(current)} alt="" /> : <span>♪</span>}</div>
+              ) : null}
+            </div>
           </div>
           <div className="np-text">
             <div className="np-title">{current ? current.title : 'Nothing playing'}</div>
-            <div className="np-artist muted">
-              {current ? `${current.artist || 'Unknown artist'}${currentIsYouTube ? '' : ` · ${SOURCE_LABELS[sourceOf(current)]}`}` : 'Pick a song to start'}
-            </div>
+            <div className="np-artist muted">{subtitle}</div>
           </div>
+          {current ? (
+            <button
+              className="icon-btn mini-play"
+              onClick={(e) => {
+                e.stopPropagation();
+                playPause();
+              }}
+            >
+              {isPlaying ? '⏸' : '▶'}
+            </button>
+          ) : null}
         </div>
 
         <div className="controls">
-          <div className="buttons">
-            <button className={`icon-btn toggle ${shuffle ? 'on' : ''}`} title="Shuffle" onClick={toggleShuffle}>⤮</button>
-            <button className="icon-btn" title="Previous" onClick={prev}>⏮</button>
-            <button className="play-btn" title={isPlaying ? 'Pause' : 'Play'} onClick={playPause}>{isPlaying ? '⏸' : '▶'}</button>
-            <button className="icon-btn" title="Next" onClick={() => next()}>⏭</button>
-            <button
-              className={`icon-btn toggle ${repeat !== 'off' ? 'on' : ''}`}
-              title={`Repeat: ${repeat}`}
-              onClick={() => setRepeat((r) => ({ off: 'all', all: 'one', one: 'off' }[r]))}
-            >
-              {repeat === 'one' ? '⟳¹' : '⟳'}
-            </button>
-            <button
-              className={`icon-btn toggle ${keepAwake ? 'on' : ''}`}
-              title={keepAwake ? 'Screen stays on during YouTube songs (tap to turn off)' : 'Keep screen on during YouTube songs'}
-              onClick={() => {
-                setKeepAwake(!keepAwake);
-                showToast(keepAwake ? 'Screen can lock again during YouTube songs' : 'Screen stays on during YouTube songs');
-              }}
-            >
-              ☀
-            </button>
-          </div>
-          <div className="progress-row">
-            <span className="time">{fmtTime(progress)}</span>
-            <input
-              type="range"
-              min="0"
-              max={time.d || 1}
-              step="0.1"
-              value={progress}
-              onChange={(e) => setSeeking(+e.target.value)}
-              onPointerUp={() => {
-                if (seeking !== null) seekTo(seeking);
-                setSeeking(null);
-              }}
-              onKeyUp={() => {
-                if (seeking !== null) seekTo(seeking);
-                setSeeking(null);
-              }}
-            />
-            <span className="time">{fmtTime(time.d)}</span>
-          </div>
+          {controlButtons}
+          {progressRow}
         </div>
 
         <div className="volume">
-          <button
-            className="icon-btn"
-            title={muted ? 'Unmute' : 'Mute'}
-            onClick={() => {
-              const m = !muted;
-              setMuted(m);
-              audio.current.muted = m;
-              if (playerReady.current) (m ? player.current.mute() : player.current.unMute());
-            }}
-          >
-            {muted || volume === 0 ? '🔇' : '🔊'}
+          {volumeControl}
+          <button className="icon-btn" title="Open player" onClick={openNowPlaying} disabled={!current}>
+            ⤢
           </button>
-          <input
-            type="range"
-            min="0"
-            max="100"
-            value={volume}
-            onChange={(e) => {
-              const v = +e.target.value;
-              setVolume(v);
-              setMuted(false);
-              audio.current.volume = v / 100;
-              audio.current.muted = false;
-              if (playerReady.current) {
-                player.current.setVolume(v);
-                player.current.unMute();
-              }
-            }}
-          />
         </div>
       </footer>
+
+      {npOpen && current ? (
+        <div className="np-full" ref={npScroller} role="dialog" aria-label="Now playing">
+          {artworkOf(current) ? (
+            <div className="np-backdrop" style={{ backgroundImage: `url("${artworkOf(current)}")` }} />
+          ) : null}
+          <div className="np-inner">
+            <header className="np-head">
+              <button className="icon-btn big" title="Close" onClick={closeNowPlaying}>
+                ⌄
+              </button>
+              <div className="np-head-text">
+                <span className="muted small">Playing from</span>
+                <b>{view ? view.name : showSearch ? 'Search' : 'All songs'}</b>
+              </div>
+              <button className="icon-btn big" title="More" onClick={(e) => openMenu(current, e)}>
+                ⋯
+              </button>
+            </header>
+
+            <div className={`np-slot ${currentIsYouTube ? 'wide' : 'square'}`} ref={slotRef} />
+
+            <div className="np-meta">
+              <div className="np-meta-text">
+                <h2>{current.title}</h2>
+                <p className="muted">{subtitle}</p>
+              </div>
+              {!songMap[current.id] ? (
+                <button className="icon-btn big accent" title="Add to library" onClick={() => addSongObject(current)}>
+                  ＋
+                </button>
+              ) : (
+                <span className="np-saved" title="In your library">✓</span>
+              )}
+            </div>
+
+            <div className="np-controls">
+              {progressRow}
+              {controlButtons}
+              <div className="np-volume">{volumeControl}</div>
+            </div>
+
+            {upNext.length ? (
+              <section className="np-queue">
+                <h3>Up next</h3>
+                <ol>
+                  {upNext.map(({ song, i }) => (
+                    <li key={`${song.id}-${i}`} onClick={() => goTo(i)}>
+                      <Thumb song={song} />
+                      <div className="song-info">
+                        <div className="song-title">{song.title}</div>
+                        <div className="song-artist">{song.artist || 'Unknown artist'}</div>
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              </section>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
 
       {menu ? (
         <SongMenu

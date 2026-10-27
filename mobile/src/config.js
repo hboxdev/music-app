@@ -3,4 +3,4 @@
 export const GOOGLE_WEB_CLIENT_ID = '';
 
 // Free Jamendo Client ID from https://devportal.jamendo.com (adds Jamendo to Search).
-export const JAMENDO_CLIENT_ID = '';
+export const JAMENDO_CLIENT_ID = '91f7048a';

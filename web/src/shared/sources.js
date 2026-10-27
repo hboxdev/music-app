@@ -99,8 +99,29 @@ async function jamendo(params, clientId) {
   return (json.results || []).filter((t) => t.audio).map(fromJamendo);
 }
 
-export const searchJamendo = (query, clientId, limit = 25) => jamendo({ search: query, limit }, clientId);
-export const popularJamendo = (clientId, limit = 25) => jamendo({ order: 'popularity_week', limit }, clientId);
+// Jamendo's search sometimes returns nothing for a query that works a moment
+// later, so this asks two ways at once (all fields + track names), merges the
+// results, and retries once if both come back empty.
+export async function searchJamendo(query, clientId, limit = 25) {
+  const once = async () => {
+    const [all, names] = await Promise.all([
+      jamendo({ search: query, limit }, clientId),
+      jamendo({ namesearch: query, limit }, clientId).catch(() => []),
+    ]);
+    const seen = new Set();
+    return [...all, ...names].filter((s) => !seen.has(s.id) && seen.add(s.id)).slice(0, limit);
+  };
+  const first = await once();
+  if (first.length) return first;
+  await new Promise((r) => setTimeout(r, 500));
+  return once();
+}
+export async function popularJamendo(clientId, limit = 25) {
+  const first = await jamendo({ order: 'popularity_week', limit }, clientId);
+  if (first.length) return first;
+  await new Promise((r) => setTimeout(r, 500));
+  return jamendo({ order: 'popularity_week', limit }, clientId);
+}
 
 export function extractJamendoId(url) {
   const m = (url || '').match(/jamendo\.com\/(?:[a-z]{2}\/)?track\/(\d+)/i);
