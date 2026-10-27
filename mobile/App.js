@@ -31,8 +31,10 @@ import {
   fetchPlaylistTitle,
   fetchVideoInfo,
 } from './src/youtube';
+import { isSavedFile, removeOffline, saveOffline } from './src/downloads';
 import {
   artworkOf,
+  canDownload,
   directAudioSong,
   extractJamendoId,
   isAudiusLink,
@@ -84,6 +86,8 @@ function choose(title, message, buttons) {
     );
   });
 }
+
+const DOWNLOADS = 'downloads';
 
 // Mixes several result lists: a1, b1, a2, b2, ...
 function interleave(lists) {
@@ -164,7 +168,15 @@ function Main() {
 
   // ---------- Derived data ----------
   const songMap = useMemo(() => Object.fromEntries(lib.songs.map((s) => [s.id, s])), [lib.songs]);
-  const openPlaylist = lib.playlists.find((p) => p.id === openPlaylistId) || null;
+  // "Downloaded" is a built-in list of the songs saved for offline listening
+  const downloadedIds = useMemo(() => lib.songs.filter((s) => s.localUri).map((s) => s.id), [lib.songs]);
+  const openPlaylist =
+    openPlaylistId === DOWNLOADS
+      ? { id: DOWNLOADS, name: 'Downloaded', source: 'downloads', songIds: downloadedIds }
+      : lib.playlists.find((p) => p.id === openPlaylistId) || null;
+  // Only the user's own playlists can be renamed, deleted or added to
+  const editable = !!openPlaylist && openPlaylist.source !== 'youtube' && openPlaylist.source !== 'downloads';
+  const [downloading, setDownloading] = useState({}); // songId → true while saving
 
   const viewSongs = useMemo(() => {
     const list = openPlaylist
@@ -221,7 +233,10 @@ function Main() {
     pendingVideo.current = null;
     if (playerReady.current) player.current.pause();
     setAudioTime({ t: 0, d: song.duration || 0 });
-    audio.replace({ uri: streamUrlOf(song) });
+    // A downloaded copy plays without internet
+    const saved = songMap[song.id];
+    const local = saved && saved.localUri && isSavedFile(saved.localUri) ? saved.localUri : null;
+    audio.replace({ uri: local || streamUrlOf(song) });
     audio.play();
     try {
       audio.setActiveForLockScreen(
@@ -438,7 +453,7 @@ function Main() {
 
   // ---------- Library changes ----------
   const addToOpenPlaylist = (playlists, songId) =>
-    openPlaylist && openPlaylist.source !== 'youtube'
+    editable
       ? playlists.map((p) =>
           p.id === openPlaylistId && !p.songIds.includes(songId)
             ? { ...p, songIds: [...p.songIds, songId] }
@@ -456,7 +471,7 @@ function Main() {
     }));
     showToast(
       exists
-        ? openPlaylist && openPlaylist.source !== 'youtube'
+        ? editable
           ? `"${song.title}" added to this playlist`
           : `"${song.title}" is already in your library`
         : `Added "${song.title}"`
@@ -521,6 +536,7 @@ function Main() {
     setLib((l) => {
       const existing = new Set(l.songs.map((s) => s.id));
       return {
+        ...l,
         songs: [...newSongs.filter((s) => !existing.has(s.id)), ...l.songs],
         playlists: [...l.playlists, playlist],
       };
@@ -692,17 +708,59 @@ function Main() {
       ),
     }));
 
+  // ---------- Offline downloads ----------
+  const downloadSong = async (song) => {
+    if (!canDownload(song)) {
+      Alert.alert("Can't download", 'This song’s owner only allows streaming. Songs from Jamendo usually can be downloaded.');
+      return;
+    }
+    if (downloading[song.id]) return;
+    setDownloading((d) => ({ ...d, [song.id]: true }));
+    showToast(`Downloading "${song.title}"…`);
+    try {
+      const uri = await saveOffline(song);
+      setLib((l) => {
+        const exists = l.songs.some((s) => s.id === song.id);
+        const songs = exists
+          ? l.songs.map((s) => (s.id === song.id ? { ...s, localUri: uri } : s))
+          : [{ ...song, localUri: uri, addedAt: Date.now() }, ...l.songs];
+        return { ...l, songs };
+      });
+      showToast(`"${song.title}" is saved for offline listening`);
+    } catch (e) {
+      Alert.alert('Download failed', 'Check your internet connection and try again.');
+    } finally {
+      setDownloading((d) => {
+        const n = { ...d };
+        delete n[song.id];
+        return n;
+      });
+    }
+  };
+
+  const removeDownload = (song) => {
+    const saved = songMap[song.id];
+    if (!saved || !saved.localUri) return;
+    removeOffline(saved.localUri);
+    setLib((l) => ({ ...l, songs: l.songs.map((s) => (s.id === song.id ? { ...s, localUri: undefined } : s)) }));
+    showToast('Removed the offline copy');
+  };
+
   const deleteSong = (song) =>
     Alert.alert('Delete song?', `Remove "${song.title}" from your library and all playlists?`, [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete',
         style: 'destructive',
-        onPress: () =>
+        onPress: () => {
+          const saved = songMap[song.id];
+          if (saved && saved.localUri) removeOffline(saved.localUri);
           setLib((l) => ({
+            ...l,
             songs: l.songs.filter((s) => s.id !== song.id),
             playlists: l.playlists.map((p) => ({ ...p, songIds: p.songIds.filter((id) => id !== song.id) })),
-          })),
+          }));
+        },
       },
     ]);
 
@@ -731,6 +789,8 @@ function Main() {
       playing={!!current && current.id === item.id}
       onPress={() => startQueue(viewSongs, i)}
       onMore={() => setMenuSong(item)}
+      downloaded={!!item.localUri}
+      downloading={!!downloading[item.id]}
     />
   );
 
@@ -745,6 +805,8 @@ function Main() {
       onMore={() => setMenuSong(item)}
       onAdd={() => addSongObject(item)}
       inLibrary={!!songMap[item.id]}
+      downloaded={!!(songMap[item.id] && songMap[item.id].localUri)}
+      downloading={!!downloading[item.id]}
     />
   );
 
@@ -814,7 +876,7 @@ function Main() {
           <Ionicons name="shuffle" size={18} color={colors.text} />
           <Text style={styles.ghostText}>Shuffle</Text>
         </Pressable>
-        {openPlaylist && openPlaylist.source !== 'youtube' ? (
+        {editable ? (
           <>
             <Pressable style={styles.iconBtn} onPress={() => renamePlaylist(openPlaylist)}>
               <Ionicons name="create-outline" size={20} color={colors.text} />
@@ -970,6 +1032,26 @@ function Main() {
                     ) : null}
                   </View>
                 </View>
+                {downloadedIds.length ? (
+                  <Pressable
+                    style={({ pressed }) => [styles.plRow, pressed && { backgroundColor: colors.raised }]}
+                    onPress={() => {
+                      setFilter('');
+                      setOpenPlaylistId(DOWNLOADS);
+                    }}
+                  >
+                    <View style={[styles.plThumb, styles.plNew, { backgroundColor: '#0e7a4f' }]}>
+                      <Ionicons name="arrow-down-circle" size={28} color="#fff" />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.plName}>Downloaded</Text>
+                      <Text style={styles.muted}>
+                        {downloadedIds.length} song{downloadedIds.length === 1 ? '' : 's'} · plays offline
+                      </Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+                  </Pressable>
+                ) : null}
                 <Pressable style={styles.plRow} onPress={() => createPlaylist()}>
                   <View style={[styles.plThumb, styles.plNew]}>
                     <Ionicons name="add" size={26} color={colors.accent} />
@@ -1053,7 +1135,7 @@ function Main() {
           <Pressable style={StyleSheet.absoluteFill} onPress={() => setAddOpen(false)} />
           <View style={styles.dialog}>
             <Text style={styles.dialogTitle}>
-              {openPlaylist && openPlaylist.source !== 'youtube' ? `Add to "${openPlaylist.name}"` : 'Add from a link'}
+              {editable ? `Add to "${openPlaylist.name}"` : 'Add from a link'}
             </Text>
             <Text style={styles.dialogHint}>
               Paste a YouTube song or playlist link, an Audius or Jamendo track link, or a direct MP3 link.
@@ -1096,7 +1178,11 @@ function Main() {
         song={menuSong}
         inLibrary={!!menuSong && !!songMap[menuSong.id]}
         playlists={lib.playlists.filter((p) => p.source !== 'youtube')}
-        currentPlaylistId={screen === 'songs' && openPlaylist && openPlaylist.source !== 'youtube' ? openPlaylistId : null}
+        currentPlaylistId={screen === 'songs' && editable ? openPlaylistId : null}
+        canDownload={!!menuSong && canDownload(menuSong)}
+        downloaded={!!menuSong && !!songMap[menuSong.id] && !!songMap[menuSong.id].localUri}
+        onDownload={downloadSong}
+        onRemoveDownload={removeDownload}
         onClose={() => setMenuSong(null)}
         onPlayNext={playNext}
         onAddToLibrary={addSongObject}

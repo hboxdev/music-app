@@ -1,6 +1,6 @@
 // Presentational pieces of the player UI: covers, cards, track tables.
-import { Check, Clock3, Disc3, Ellipsis, Heart, Play, Pause, Plus } from 'lucide-react';
-import { SOURCE_LABELS, artworkOf, sourceOf } from '../shared/sources';
+import { Check, Clock3, Disc3, Download, Ellipsis, Heart, Play, Pause, Plus } from 'lucide-react';
+import { SOURCE_LABELS, artworkOf, canDownload, sourceOf } from '../shared/sources';
 
 export function fmtTime(sec) {
   sec = Math.max(0, Math.floor(sec || 0));
@@ -93,7 +93,7 @@ export function Shelf({ title, action, children }) {
 }
 
 // Spotify-style track list
-export function TrackTable({ songs, currentId, isPlaying, onPlay, onMore, onAdd, inLibrary }) {
+export function TrackTable({ songs, currentId, isPlaying, onPlay, onMore, onAdd, inLibrary, onDownload }) {
   return (
     <div className="tracks" role="table">
       <div className="tracks-head" role="row">
@@ -134,6 +134,18 @@ export function TrackTable({ songs, currentId, isPlaying, onPlay, onMore, onAdd,
             </span>
             <span className="col-time">{s.duration ? fmtTime(s.duration) : ''}</span>
             <span className="col-actions">
+              {onDownload && canDownload(s) ? (
+                <button
+                  className="ibtn dl"
+                  title="Download MP3"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDownload(s);
+                  }}
+                >
+                  <Download size={17} />
+                </button>
+              ) : null}
               {onAdd ? (
                 <button
                   className={`ibtn heart ${saved ? 'on' : ''}`}

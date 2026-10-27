@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from './theme';
 import { SOURCE_LABELS, artworkOf, sourceOf } from './sources';
@@ -7,7 +7,7 @@ import { SOURCE_LABELS, artworkOf, sourceOf } from './sources';
 const BADGE_COLORS = { audius: '#8b5cf6', jamendo: '#0ea5e9', url: colors.muted };
 
 // onAdd: when given, shows a + button (✓ once the song is in the library)
-function SongRow({ song, number, playing, onPress, onMore, onAdd, inLibrary }) {
+function SongRow({ song, number, playing, onPress, onMore, onAdd, inLibrary, downloaded, downloading }) {
   const art = artworkOf(song);
   const src = sourceOf(song);
   return (
@@ -30,6 +30,11 @@ function SongRow({ song, number, playing, onPress, onMore, onAdd, inLibrary }) {
           {song.title}
         </Text>
         <View style={styles.meta}>
+          {downloading ? (
+            <ActivityIndicator size={12} color={colors.accent} />
+          ) : downloaded ? (
+            <Ionicons name="arrow-down-circle" size={14} color="#1ed760" />
+          ) : null}
           {src !== 'youtube' ? (
             <Text style={[styles.badge, { color: BADGE_COLORS[src] }]}>{SOURCE_LABELS[src]}</Text>
           ) : null}

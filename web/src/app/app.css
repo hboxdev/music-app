@@ -527,8 +527,11 @@ h1, h2, h3 { margin: 0; letter-spacing: -0.02em; }
 .panel-meta h3 { font-size: 22px; font-weight: 800; line-height: 1.2; }
 .panel-meta p { margin: 4px 0 0; color: var(--muted); }
 .panel-source { display: flex; align-items: center; justify-content: space-between; }
-.panel-source a { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 13px; text-decoration: none; }
-.panel-source a:hover { color: var(--text); text-decoration: underline; }
+.panel-links { display: inline-flex; align-items: center; gap: 14px; }
+.panel-source a, .panel-links button { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 13px; text-decoration: none; }
+.panel-source a:hover, .panel-links button:hover { color: var(--text); text-decoration: underline; }
+.col-actions .dl { opacity: 0; }
+.track:hover .dl, .dl:focus-visible { opacity: 1; }
 .panel-queue { background: var(--surface-2); border-radius: 8px; padding: 14px 8px 8px; }
 .panel-queue > b { display: block; padding: 0 8px 8px; }
 
@@ -846,7 +849,7 @@ h1, h2, h3 { margin: 0; letter-spacing: -0.02em; }
   .track .col-num, .track .col-source, .track .col-time { display: none; }
   .t-art { width: 48px; height: 48px; }
   .t-art.wide { width: 64px; height: 36px; }
-  .col-actions .more { opacity: 1; }
+  .col-actions .more, .col-actions .dl { opacity: 1; }
 
   .collection { padding-top: 64px; }
   .collection .lib-head { padding: 0 0 12px; }

@@ -20,6 +20,10 @@ export default function SongMenu({
   onNewPlaylist,
   onRemoveFromPlaylist,
   onDelete,
+  canDownload,
+  downloaded,
+  onDownload,
+  onRemoveDownload,
 }) {
   const insets = useSafeAreaInsets();
   const [picking, setPicking] = useState(false);
@@ -77,6 +81,11 @@ export default function SongMenu({
             <Item icon="play-forward-outline" label="Play next" onPress={act(onPlayNext)} />
             {!inLibrary ? <Item icon="heart-outline" label="Add to library" onPress={act(onAddToLibrary)} /> : null}
             <Item icon="add-outline" label="Add to playlist" onPress={() => setPicking(true)} />
+            {downloaded ? (
+              <Item icon="cloud-offline-outline" label="Remove download" onPress={act(onRemoveDownload)} />
+            ) : canDownload ? (
+              <Item icon="arrow-down-circle-outline" label="Download for offline" onPress={act(onDownload)} />
+            ) : null}
             {inLibrary && currentPlaylistId ? (
               <Item icon="remove-circle-outline" label="Remove from this playlist" onPress={act(onRemoveFromPlaylist)} />
             ) : null}

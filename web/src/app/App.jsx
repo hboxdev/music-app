@@ -4,6 +4,7 @@ import {
   CircleMinus,
   Clipboard,
   Disc3,
+  Download,
   Ellipsis,
   ExternalLink,
   Heart,
@@ -50,7 +51,9 @@ import { mergeSync, removeSynced, syncYouTube } from '../shared/ytsync';
 import {
   SOURCE_LABELS,
   artworkOf,
+  canDownload,
   directAudioSong,
+  fileNameOf,
   extractJamendoId,
   isAudiusLink,
   isYouTube,
@@ -733,6 +736,33 @@ export default function App() {
     addSongObject({ ...song, duration: probe.duration });
   };
 
+  // ---------- Downloads ----------
+  // Saves the MP3 to the device. Audius and most audio links allow this
+  // directly; Jamendo's file server doesn't let browsers fetch files, so those
+  // open in the browser's own player, which has a save option.
+  const downloadSong = async (song) => {
+    if (!canDownload(song)) return showToast('This song can’t be downloaded. Its owner only allows streaming.');
+    setBusy(`Downloading “${song.title}”…`);
+    try {
+      const res = await fetch(song.downloadUrl);
+      if (!res.ok) throw new Error('bad status');
+      const blob = await res.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = fileNameOf(song);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+      showToast(`Saved “${fileNameOf(song)}” to your downloads`);
+    } catch {
+      window.open(song.source === 'jamendo' && song.streamUrl ? song.streamUrl : song.downloadUrl, '_blank', 'noopener');
+      showToast('Opened the song in a new tab. Use your browser’s download or ⋮ → Download to save it.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
   // ---------- Playlists ----------
   const newPlaylist = (songs = [], then) =>
     setDialog({
@@ -1102,6 +1132,7 @@ export default function App() {
             isPlaying={isPlaying}
             onPlay={(i) => startQueue(viewSongs, i, shuffle, from)}
             onMore={openMenu}
+            onDownload={downloadSong}
           />
         ) : (
           <div className="empty">
@@ -1340,6 +1371,7 @@ export default function App() {
             onMore={openMenu}
             onAdd={addSongObject}
             inLibrary={inLibrary}
+            onDownload={downloadSong}
           />
         </>
       ) : search.q ? (
@@ -1432,9 +1464,16 @@ export default function App() {
               {currentIsYouTube ? <YouTubeIcon size={14} /> : null}
               {SOURCE_LABELS[sourceOf(current)]}
             </span>
-            <a href={pageUrlOf(current)} target="_blank" rel="noopener noreferrer">
-              Open <ExternalLink size={13} />
-            </a>
+            <span className="panel-links">
+              {canDownload(current) ? (
+                <button onClick={() => downloadSong(current)}>
+                  <Download size={13} /> Download
+                </button>
+              ) : null}
+              <a href={pageUrlOf(current)} target="_blank" rel="noopener noreferrer">
+                Open <ExternalLink size={13} />
+              </a>
+            </span>
           </div>
           {upNext.length ? (
             <div className="panel-queue">
@@ -1549,9 +1588,16 @@ export default function App() {
                 {currentIsYouTube ? <YouTubeIcon size={14} /> : null}
                 {SOURCE_LABELS[sourceOf(current)]}
               </span>
-              <a className="ibtn" href={pageUrlOf(current)} target="_blank" rel="noopener noreferrer" title="Open source page">
-                <ExternalLink size={18} />
-              </a>
+              <span>
+                {canDownload(current) ? (
+                  <button className="ibtn" title="Download MP3" onClick={() => downloadSong(current)}>
+                    <Download size={20} />
+                  </button>
+                ) : null}
+                <a className="ibtn" href={pageUrlOf(current)} target="_blank" rel="noopener noreferrer" title="Open source page">
+                  <ExternalLink size={18} />
+                </a>
+              </span>
             </div>
             {upNext.length ? (
               <section className="np-queue">
@@ -1573,6 +1619,7 @@ export default function App() {
           onAddToLibrary={menuAction((s) => addSongObject(s))}
           onEdit={menuAction(editSong)}
           onOpen={menuAction((s) => window.open(pageUrlOf(s), '_blank', 'noopener'))}
+          onDownload={menuAction(downloadSong)}
           onAdd={(pl) => menuAction((s) => addToPlaylist(s, pl))()}
           onNew={menuAction((s) => newPlaylist([s], (pl) => showToast(`Added to "${pl.name}"`)))}
           onRemove={menuAction(removeFromPlaylist)}
@@ -1597,7 +1644,7 @@ export default function App() {
   );
 }
 
-function SongMenu({ menu, inLibrary, playlists, inMyPlaylist, onPlayNext, onAddToLibrary, onEdit, onOpen, onAdd, onNew, onRemove, onDelete }) {
+function SongMenu({ menu, inLibrary, playlists, inMyPlaylist, onPlayNext, onAddToLibrary, onEdit, onOpen, onDownload, onAdd, onNew, onRemove, onDelete }) {
   const ref = useRef(null);
   const [pos, setPos] = useState({ left: menu.x, top: menu.y, visibility: 'hidden' });
   const [picking, setPicking] = useState(false);
@@ -1655,6 +1702,11 @@ function SongMenu({ menu, inLibrary, playlists, inMyPlaylist, onPlayNext, onAddT
           {inLibrary ? (
             <Item icon={Pencil} onClick={onEdit}>
               Edit details
+            </Item>
+          ) : null}
+          {canDownload(menu.song) ? (
+            <Item icon={Download} onClick={onDownload}>
+              Download MP3
             </Item>
           ) : null}
           <Item icon={ExternalLink} onClick={onOpen}>

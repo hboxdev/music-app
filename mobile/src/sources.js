@@ -40,6 +40,11 @@ function fromAudius(t) {
     artwork: (t.artwork && (t.artwork['480x480'] || t.artwork['150x150'])) || null,
     duration: t.duration || 0,
     pageUrl: t.permalink ? `https://audius.co${t.permalink}` : null,
+    // Only when the artist turned downloads on with no conditions (follow, purchase…)
+    downloadUrl:
+      t.is_downloadable && !t.download_conditions && !t.is_download_gated
+        ? `${AUDIUS}/tracks/${t.id}/download?app_name=${APP_NAME}`
+        : null,
   };
 }
 
@@ -80,6 +85,9 @@ function fromJamendo(t) {
     duration: t.duration || 0,
     streamUrl: t.audio,
     pageUrl: t.shareurl || `https://www.jamendo.com/track/${t.id}`,
+    // Jamendo marks whether the artist's licence allows downloads
+    downloadUrl: t.audiodownload_allowed ? t.audiodownload || t.audio : null,
+    license: t.license_ccurl || null,
   };
 }
 
@@ -151,5 +159,16 @@ export function directAudioSong(url) {
   }
   const file = decodeURIComponent(u.pathname.split('/').pop() || '');
   const title = file.replace(/\.[a-z0-9]{2,4}$/i, '').replace(/[_]+/g, ' ').trim();
-  return { id: `url_${hash(url)}`, source: 'url', title: title || 'Audio link', artist: u.hostname, streamUrl: url };
+  return { id: `url_${hash(url)}`, source: 'url', title: title || 'Audio link', artist: u.hostname, streamUrl: url, downloadUrl: url };
+}
+
+// ---------- Downloads ----------
+// Only songs whose owners allow it can be saved: Jamendo tracks with downloads
+// allowed, Audius tracks with free downloads, and the user's own audio links.
+// YouTube songs are never downloadable.
+export const canDownload = (song) => !!song && !isYouTube(song) && !!song.downloadUrl;
+
+export function fileNameOf(song) {
+  const base = `${song.artist ? `${song.artist} - ` : ''}${song.title}`.replace(/[\\/:*?"<>|]+/g, ' ').trim();
+  return `${base.slice(0, 120) || 'song'}.mp3`;
 }
