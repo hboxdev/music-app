@@ -17,6 +17,7 @@ import {
   LoaderCircle,
   LogOut,
   Maximize2,
+  MonitorDown,
   PanelRight,
   Pause,
   Pencil,
@@ -197,6 +198,29 @@ export default function App() {
   const [googleReady, setGoogleReady] = useState(false);
   const [panelOpen, setPanelOpen] = useState(true);
   const wide = useMedia('(min-width: 1180px)');
+
+  // Chrome and Edge offer to install the web app as a desktop app; keep their
+  // prompt so our own "Install app" button can show it
+  const [installPrompt, setInstallPrompt] = useState(null);
+  useEffect(() => {
+    const offer = (e) => {
+      e.preventDefault();
+      setInstallPrompt(e);
+    };
+    const installed = () => setInstallPrompt(null);
+    window.addEventListener('beforeinstallprompt', offer);
+    window.addEventListener('appinstalled', installed);
+    return () => {
+      window.removeEventListener('beforeinstallprompt', offer);
+      window.removeEventListener('appinstalled', installed);
+    };
+  }, []);
+
+  const installApp = async () => {
+    installPrompt.prompt();
+    await installPrompt.userChoice;
+    setInstallPrompt(null);
+  };
 
   // Two engines: YouTube's player for YouTube songs, an <audio> element for the rest
   const playerEl = useRef(null);
@@ -1432,6 +1456,11 @@ export default function App() {
             TubeTunes
           </span>
           <div className="topbar-actions">
+            {installPrompt ? (
+              <button className="pill" title="Install TubeTunes as an app on this device" onClick={installApp}>
+                <MonitorDown size={16} /> <span className="hide-sm">Install app</span>
+              </button>
+            ) : null}
             <button className="pill light" onClick={() => setLinkOpen(true)}>
               <Link2 size={16} /> <span className="hide-sm">Add from link</span>
             </button>

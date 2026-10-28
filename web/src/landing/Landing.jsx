@@ -28,7 +28,7 @@ const features = [
   ['⟳', 'Synced with YouTube', 'Your own playlists and liked videos, kept up to date with one tap.'],
   ['🔗', 'Paste any link', 'Add songs from YouTube, Audius, Jamendo or a direct MP3 link, or a whole YouTube playlist.'],
   ['⤮', 'Made for listening', 'Play queue, shuffle, repeat, search and your own playlists.'],
-  ['📱', 'Phone and web', 'An Android app and a web app that work the same way.'],
+  ['📱', 'Phone, web and desktop', 'An Android app, plus a web app you can install on your computer. They all work the same way.'],
   ['🔒', 'Read-only access', 'TubeTunes never posts, deletes or changes anything on your account.'],
   ['🔍', 'Search free music', 'Find full songs from Audius and Jamendo. They keep playing with your screen locked.'],
 ];
@@ -49,6 +49,10 @@ const faqs = [
   [
     'Is there an iPhone app?',
     'Not yet. Apple only allows installs from the App Store. On iPhone, open the web app in Safari and use Share → Add to Home Screen.',
+  ],
+  [
+    'Is there a desktop app?',
+    'Yes. Open the web app in Chrome or Edge and click Install app (or the install icon in the address bar). TubeTunes then opens in its own window from your Start menu, Dock or taskbar.',
   ],
   [
     'Does music keep playing when I lock my phone?',
@@ -171,7 +175,7 @@ export default function Landing() {
         <section className="hero">
           <div className="wrap hero-inner">
             <div className="hero-text">
-              <p className="pill">Free · Android &amp; web</p>
+              <p className="pill">Free · Android, web &amp; desktop</p>
               <h1>Your YouTube playlists, as a music app.</h1>
               <p className="lead">
                 Connect your YouTube account once. Every playlist you’ve made, plus your liked videos, turns into a

@@ -1,0 +1,17 @@
+{
+  "id": "./app/",
+  "name": "TubeTunes",
+  "short_name": "TubeTunes",
+  "description": "Your YouTube playlists, as a music app.",
+  "start_url": "./app/",
+  "scope": "./app/",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#121216",
+  "categories": ["music", "entertainment"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
