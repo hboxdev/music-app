@@ -1,7 +1,8 @@
 // The library is saved in this browser
 const KEY = 'tubetunes:library:v1';
 
-export const emptyLibrary = { songs: [], playlists: [], account: null, syncedAt: null };
+// guest: the user chose to use the app without signing in
+export const emptyLibrary = { songs: [], playlists: [], account: null, syncedAt: null, guest: false };
 
 export function loadLibrary() {
   try {
