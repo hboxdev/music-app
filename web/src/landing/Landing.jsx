@@ -35,8 +35,8 @@ const features = [
 
 const faqs = [
   [
-    'Does TubeTunes download songs as MP3?',
-    'No. Songs stream, so you need an internet connection. YouTube songs play through YouTube’s official player; saving YouTube audio as files breaks YouTube’s rules and often the music’s copyright.',
+    'Can I download songs and listen offline?',
+    'Yes, for songs whose artists allow it: songs from Audius with free downloads and your own audio links (and Jamendo songs in the Android app). They’re saved inside TubeTunes, appear under Downloaded, and play without internet. YouTube songs always stream through YouTube’s official player; saving YouTube audio breaks YouTube’s rules and often the music’s copyright.',
   ],
   [
     'Why does it ask me to sign in with Google?',

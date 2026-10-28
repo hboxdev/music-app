@@ -1,5 +1,5 @@
 // Presentational pieces of the player UI: covers, cards, track tables.
-import { Check, Clock3, Disc3, Download, Ellipsis, Heart, Play, Pause, Plus } from 'lucide-react';
+import { Check, CircleCheck, Clock3, Disc3, Download, Ellipsis, Heart, LoaderCircle, Play, Pause, Plus } from 'lucide-react';
 import { SOURCE_LABELS, artworkOf, canDownload, sourceOf } from '../shared/sources';
 
 export function fmtTime(sec) {
@@ -92,8 +92,9 @@ export function Shelf({ title, action, children }) {
   );
 }
 
-// Spotify-style track list
-export function TrackTable({ songs, currentId, isPlaying, onPlay, onMore, onAdd, inLibrary, onDownload }) {
+// Spotify-style track list.
+// isSaved, downloading and canPlay show downloads and which songs play offline.
+export function TrackTable({ songs, currentId, isPlaying, onPlay, onMore, onAdd, inLibrary, onDownload, isSaved, downloading = {}, canPlay }) {
   return (
     <div className="tracks" role="table">
       <div className="tracks-head" role="row">
@@ -110,11 +111,14 @@ export function TrackTable({ songs, currentId, isPlaying, onPlay, onMore, onAdd,
         const src = sourceOf(s);
         const art = artworkOf(s);
         const saved = inLibrary ? inLibrary(s.id) : true;
+        const offline = isSaved ? isSaved(s.id) : false;
+        const playable = canPlay ? canPlay(s) : true;
         return (
           <div
             key={`${s.id}-${i}`}
             role="row"
-            className={`track ${active ? 'active' : ''}`}
+            className={`track ${active ? 'active' : ''} ${playable ? '' : 'unavailable'}`}
+            title={playable ? undefined : 'Not downloaded: needs internet'}
             onClick={() => onPlay(i)}
             onDoubleClick={() => onPlay(i)}
           >
@@ -134,10 +138,18 @@ export function TrackTable({ songs, currentId, isPlaying, onPlay, onMore, onAdd,
             </span>
             <span className="col-time">{s.duration ? fmtTime(s.duration) : ''}</span>
             <span className="col-actions">
-              {onDownload && canDownload(s) ? (
+              {offline ? (
+                <span className="ibtn dl saved" title="Downloaded: plays without internet">
+                  <CircleCheck size={17} />
+                </span>
+              ) : downloading[s.id] ? (
+                <span className="ibtn dl busy" title="Downloading…">
+                  <LoaderCircle size={17} className="spin" />
+                </span>
+              ) : onDownload && canDownload(s) ? (
                 <button
                   className="ibtn dl"
-                  title="Download MP3"
+                  title="Download to play without internet"
                   onClick={(e) => {
                     e.stopPropagation();
                     onDownload(s);

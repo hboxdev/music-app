@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronDown,
+  CircleArrowDown,
+  CircleCheck,
   CircleMinus,
   Clipboard,
   Disc3,
@@ -35,9 +37,11 @@ import {
   Volume1,
   Volume2,
   VolumeX,
+  WifiOff,
   X,
 } from 'lucide-react';
 import { loadLibrary, saveLibrary } from './storage';
+import { listSaved, removeOffline, saveOffline, savedBlob } from './offline';
 import { getAccessToken, googleConfigured, initGoogle, signOutGoogle } from './google';
 import { loadYouTubeApi, readPlaylistIds } from './player';
 import { Card, Cover, Equalizer, HeartButton, Shelf, TrackTable, YouTubeIcon, fmtTime, hueOf } from './ui';
@@ -54,7 +58,6 @@ import {
   artworkOf,
   canDownload,
   directAudioSong,
-  fileNameOf,
   extractJamendoId,
   isAudiusLink,
   isYouTube,
@@ -76,6 +79,7 @@ const HOME = 'home';
 const SEARCH = 'search';
 const COLLECTION = 'collection'; // the library list (used on phones)
 const ALL_SONGS = 'all';
+const DOWNLOADS = 'downloads'; // songs saved for offline listening
 
 const GENRES = [
   ['Lofi', 'lofi', 265],
@@ -89,6 +93,8 @@ const GENRES = [
   ['Ambient', 'ambient', 200],
   ['Rock', 'rock', 350],
 ];
+
+const OFFLINE_SEARCH = 'You’re offline. Search needs internet; your downloaded songs are in Your Library → Downloaded.';
 
 const ERROR_REASONS = {
   2: 'invalid video',
@@ -199,6 +205,11 @@ export default function App() {
   const [panelOpen, setPanelOpen] = useState(true);
   const wide = useMedia('(min-width: 1180px)');
 
+  // Offline: songs saved inside this browser, and whether there is internet
+  const [savedIds, setSavedIds] = useState(() => new Set());
+  const [downloading, setDownloading] = useState({}); // songId → true while saving
+  const [online, setOnline] = useState(() => navigator.onLine);
+
   // Chrome and Edge offer to install the web app as a desktop app; keep their
   // prompt so our own "Install app" button can show it
   const [installPrompt, setInstallPrompt] = useState(null);
@@ -242,15 +253,19 @@ export default function App() {
   // ---------- Derived ----------
   const songMap = useMemo(() => Object.fromEntries(lib.songs.map((s) => [s.id, s])), [lib.songs]);
   const inLibrary = useCallback((id) => !!songMap[id], [songMap]);
+  const isSaved = useCallback((id) => savedIds.has(id), [savedIds]);
+  const downloadedSongs = useMemo(() => lib.songs.filter((s) => savedIds.has(s.id)), [lib.songs, savedIds]);
+  // Without internet only downloaded songs can play
+  const canPlay = useCallback((song) => online || savedIds.has(song.id), [online, savedIds]);
   const view = lib.playlists.find((p) => p.id === viewId) || null;
-  const isListView = !!view || viewId === ALL_SONGS;
+  const isListView = !!view || viewId === ALL_SONGS || viewId === DOWNLOADS;
   const playlistSongs = useCallback((p) => p.songIds.map((id) => songMap[id]).filter(Boolean), [songMap]);
 
   const viewSongs = useMemo(() => {
-    const list = view ? playlistSongs(view) : lib.songs;
+    const list = view ? playlistSongs(view) : viewId === DOWNLOADS ? downloadedSongs : lib.songs;
     const q = filter.trim().toLowerCase();
     return q ? list.filter((s) => s.title.toLowerCase().includes(q) || (s.artist || '').toLowerCase().includes(q)) : list;
-  }, [view, playlistSongs, lib.songs, filter]);
+  }, [view, viewId, playlistSongs, downloadedSongs, lib.songs, filter]);
 
   const libraryItems = lib.playlists.filter((p) =>
     libFilter === 'all' ? true : libFilter === 'youtube' ? p.source === 'youtube' : p.source !== 'youtube'
@@ -260,11 +275,14 @@ export default function App() {
   const currentIsYouTube = !!current && isYouTube(current);
 
   // ---------- Player setup ----------
-  useEffect(() => {
-    let cancelled = false;
+  // YouTube's player needs internet to load; without it, this runs again once
+  // the connection is back
+  const ytStarted = useRef(false);
+  const startYouTube = useCallback(() => {
+    if (ytStarted.current) return;
+    ytStarted.current = true;
     loadYouTubeApi()
       .then((YT) => {
-        if (cancelled) return;
         player.current = new YT.Player(playerEl.current, {
           width: '320',
           height: '180',
@@ -283,7 +301,14 @@ export default function App() {
           },
         });
       })
-      .catch((e) => showToast(e.message));
+      .catch((e) => {
+        ytStarted.current = false;
+        if (navigator.onLine) showToast(e.message);
+      });
+  }, [showToast]);
+
+  useEffect(() => {
+    startYouTube();
     initGoogle().then(setGoogleReady);
 
     const a = audio.current;
@@ -295,14 +320,12 @@ export default function App() {
     on('error', () => handlers.current.onAudio('error'));
     on('timeupdate', () => handlers.current.onAudio('time'));
     on('loadedmetadata', () => handlers.current.onAudio('time'));
-    return () => {
-      cancelled = true;
-      a.pause();
-    };
-  }, [showToast]);
+    return () => a.pause();
+  }, [startYouTube]);
 
   // Home shelves
-  useEffect(() => {
+  const loadHome = useCallback(() => {
+    setHome((h) => ({ ...h, loading: true }));
     Promise.allSettled([trendingAudius(20), JAMENDO_CLIENT_ID ? popularJamendo(JAMENDO_CLIENT_ID, 20) : Promise.resolve([])]).then(
       ([t, f]) =>
         setHome({
@@ -312,6 +335,43 @@ export default function App() {
         })
     );
   }, []);
+  useEffect(loadHome, [loadHome]);
+
+  // Saved songs. A saved copy whose song was removed from the library is cleaned up.
+  useEffect(() => {
+    listSaved()
+      .then((ids) => {
+        const known = new Set(loadLibrary().songs.map((s) => s.id));
+        for (const id of [...ids]) {
+          if (known.has(id)) continue;
+          ids.delete(id);
+          removeOffline(id).catch(() => {});
+        }
+        setSavedIds(ids);
+      })
+      .catch(() => {});
+  }, []);
+
+  // Going offline and back online
+  useEffect(() => {
+    const down = () => {
+      setOnline(false);
+      showToast('You’re offline. Downloaded songs still play.');
+    };
+    const up = () => {
+      setOnline(true);
+      startYouTube();
+      if (!window.google) initGoogle().then(setGoogleReady);
+      if (!handlers.current.homeLoaded) loadHome();
+      showToast('Back online');
+    };
+    window.addEventListener('offline', down);
+    window.addEventListener('online', up);
+    return () => {
+      window.removeEventListener('offline', down);
+      window.removeEventListener('online', up);
+    };
+  }, [showToast, startYouTube, loadHome]);
 
   // Progress for YouTube songs (audio songs report through timeupdate)
   useEffect(() => {
@@ -328,8 +388,24 @@ export default function App() {
   }, [current]);
 
   // ---------- Playback ----------
+  const loadSeq = useRef(0);
+  const blobUrl = useRef(null);
+
+  const playAudioFrom = (src) => {
+    if (blobUrl.current && blobUrl.current !== src) URL.revokeObjectURL(blobUrl.current);
+    blobUrl.current = src.startsWith('blob:') ? src : null;
+    audio.current.src = src;
+    audio.current.play().catch(() => setIsPlaying(false));
+  };
+
   const loadSong = (song) => {
+    const seq = ++loadSeq.current;
     setTime({ t: 0, d: song.duration || 0 });
+    if (!canPlay(song)) {
+      audio.current.pause();
+      if (playerReady.current) player.current.pauseVideo();
+      return skipBroken('you’re offline and it isn’t downloaded', song);
+    }
     if (isYouTube(song)) {
       audio.current.pause();
       if (playerReady.current) player.current.loadVideoById(song.id);
@@ -337,14 +413,30 @@ export default function App() {
     } else {
       pendingVideo.current = null;
       if (playerReady.current) player.current.pauseVideo();
-      audio.current.src = streamUrlOf(song);
-      audio.current.play().catch(() => setIsPlaying(false));
+      if (!savedIds.has(song.id)) return playAudioFrom(streamUrlOf(song));
+      // A downloaded copy plays without internet
+      audio.current.pause();
+      savedBlob(song.id)
+        .catch(() => null)
+        .then((blob) => {
+          if (seq !== loadSeq.current) return;
+          if (blob) playAudioFrom(URL.createObjectURL(blob));
+          else if (online) playAudioFrom(streamUrlOf(song));
+          else skipBroken('the downloaded copy is missing', song);
+        });
     }
   };
 
   // from: a label for "Playing from …"
   const startQueue = (songs, start = 0, useShuffle = shuffle, from = '') => {
     if (!songs.length) return;
+    // Offline, the queue only holds downloaded songs
+    if (!online) {
+      if (!canPlay(songs[start])) return showToast('You’re offline. Only downloaded songs play without internet.');
+      const ok = songs.filter(canPlay);
+      start = ok.indexOf(songs[start]);
+      songs = ok;
+    }
     const q = useShuffle ? [songs[start], ...shuffled(songs.filter((_, k) => k !== start))] : songs.slice();
     const i = useShuffle ? 0 : start;
     setQueue(q);
@@ -358,10 +450,13 @@ export default function App() {
     loadSong(queue[i]);
   };
 
+  // Next and previous skip songs that can't play right now (offline and not downloaded)
   const next = (auto = false) => {
     if (!queue.length) return;
-    if (index < queue.length - 1) goTo(index + 1);
-    else if (repeat === 'all' || !auto) goTo(0);
+    const ahead = queue.findIndex((s, i) => i > index && canPlay(s));
+    const first = queue.findIndex(canPlay);
+    if (ahead !== -1) goTo(ahead);
+    else if ((repeat === 'all' || !auto) && first !== -1) goTo(first);
     else setIsPlaying(false);
   };
 
@@ -375,7 +470,10 @@ export default function App() {
   const prev = () => {
     if (!queue.length) return;
     if (time.t > 3) return seekTo(0);
-    goTo(index > 0 ? index - 1 : queue.length - 1);
+    for (let k = 1, i = index; k <= queue.length; k++) {
+      i = (i - 1 + queue.length) % queue.length;
+      if (canPlay(queue[i])) return goTo(i);
+    }
   };
 
   const resume = () => {
@@ -419,14 +517,15 @@ export default function App() {
     } else next(true);
   };
 
-  const skipBroken = (reason) => {
-    showToast(`Can't play ${current ? `"${current.title}"` : 'this song'}: ${reason}. Skipping.`);
+  const skipBroken = (reason, song = current) => {
+    showToast(`Can't play ${song ? `"${song.title}"` : 'this song'}: ${reason}. Skipping.`);
     setTimeout(() => handlers.current.next(true), 1500);
   };
 
   handlers.current = {
     ...handlers.current,
     currentIsYouTube,
+    homeLoaded: home.trending.length > 0 || home.fresh.length > 0,
     next,
     playPause,
     resume,
@@ -622,6 +721,10 @@ export default function App() {
   // ---------- Search ----------
   const runSearch = async (q, source) => {
     const seq = ++searchSeq.current;
+    if (!navigator.onLine) {
+      setSearch((s) => ({ ...s, q, source, loading: false, results: [], heading: '', error: OFFLINE_SEARCH }));
+      return;
+    }
     setSearch((s) => ({ ...s, q, source, loading: true, error: '' }));
     const tasks = [];
     if (source !== 'jamendo') tasks.push(q ? searchAudius(q) : trendingAudius());
@@ -647,6 +750,7 @@ export default function App() {
 
   // ---------- YouTube sync ----------
   const syncNow = async () => {
+    if (!navigator.onLine) return showToast('You’re offline. Connect to the internet to sync YouTube.');
     let token;
     try {
       token = await getAccessToken(); // opens Google's popup when needed
@@ -727,6 +831,7 @@ export default function App() {
   };
 
   const addFromLink = async (url) => {
+    if (!navigator.onLine) return showToast('You’re offline. Connect to the internet to add songs.');
     const listId = extractPlaylistId(url);
     const videoId = extractVideoId(url);
     if (listId && (!videoId || confirm('This link is part of a playlist.\n\nOK = import the whole playlist\nCancel = add only this song'))) {
@@ -765,30 +870,49 @@ export default function App() {
   };
 
   // ---------- Downloads ----------
-  // Saves the MP3 to the device. Audius and most audio links allow this
-  // directly; Jamendo's file server doesn't let browsers fetch files, so those
-  // open in the browser's own player, which has a save option.
+  // Saves the song inside the app (not the Downloads folder) so it plays
+  // without internet, and adds it to the library and the Downloaded list.
+  // Jamendo's file server may not let browsers read its files; then the
+  // download fails with a message.
   const downloadSong = async (song) => {
     if (!canDownload(song)) return showToast('This song can’t be downloaded. Its owner only allows streaming.');
-    setBusy(`Downloading “${song.title}”…`);
+    if (savedIds.has(song.id) || downloading[song.id]) return;
+    if (!navigator.onLine) return showToast('You’re offline. Connect to the internet to download.');
+    setDownloading((d) => ({ ...d, [song.id]: true }));
+    showToast(`Downloading “${song.title}”…`);
     try {
-      const res = await fetch(song.downloadUrl);
-      if (!res.ok) throw new Error('bad status');
-      const blob = await res.blob();
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = fileNameOf(song);
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
-      showToast(`Saved “${fileNameOf(song)}” to your downloads`);
-    } catch {
-      window.open(song.source === 'jamendo' && song.streamUrl ? song.streamUrl : song.downloadUrl, '_blank', 'noopener');
-      showToast('Opened the song in a new tab. Use your browser’s download or ⋮ → Download to save it.');
+      await saveOffline(song, [song.downloadUrl, streamUrlOf(song)].filter(Boolean));
+      setLib((l) => ({
+        ...l,
+        songs: l.songs.some((s) => s.id === song.id) ? l.songs : [{ ...song, addedAt: Date.now() }, ...l.songs],
+      }));
+      setSavedIds((ids) => new Set(ids).add(song.id));
+      showToast(`“${song.title}” is downloaded and plays without internet`);
+    } catch (e) {
+      showToast(
+        e.message !== 'download failed'
+          ? e.message
+          : song.source === 'jamendo'
+            ? 'Jamendo doesn’t let web browsers save its songs. Use the Android app to download this one.'
+            : 'Download failed. Check your internet connection and try again.'
+      );
     } finally {
-      setBusy(null);
+      setDownloading((d) => {
+        const n = { ...d };
+        delete n[song.id];
+        return n;
+      });
     }
+  };
+
+  const removeDownload = (song) => {
+    removeOffline(song.id).catch(() => {});
+    setSavedIds((ids) => {
+      const n = new Set(ids);
+      n.delete(song.id);
+      return n;
+    });
+    showToast(`Removed the download of “${song.title}”`);
   };
 
   // ---------- Playlists ----------
@@ -872,6 +996,7 @@ export default function App() {
 
   const deleteSong = (song) => {
     if (!confirm(`Delete "${song.title}" from your library and all your playlists?`)) return;
+    if (savedIds.has(song.id)) removeDownload(song);
     setLib((l) => ({
       ...l,
       songs: l.songs.filter((s) => s.id !== song.id),
@@ -1035,6 +1160,21 @@ export default function App() {
     </button>
   );
 
+  const downloadsRow = (
+    <button className={`lib-row ${viewId === DOWNLOADS ? 'active' : ''}`} onClick={() => go(DOWNLOADS)}>
+      <span className="cover downloads">
+        <CircleArrowDown size={20} />
+      </span>
+      <span className="lib-text">
+        <span className={`lib-name ${isPlayingFrom(DOWNLOADS) ? 'playing' : ''}`}>Downloaded</span>
+        <span className="lib-sub">
+          {downloadedSongs.length} song{downloadedSongs.length === 1 ? '' : 's'} · plays offline
+        </span>
+      </span>
+      {isPlayingFrom(DOWNLOADS) ? <Equalizer /> : null}
+    </button>
+  );
+
   const youtubeCard = lib.account ? (
     <div className="yt-account">
       {lib.account.avatar ? <img src={lib.account.avatar} alt="" referrerPolicy="no-referrer" /> : <YouTubeIcon size={20} />}
@@ -1082,6 +1222,7 @@ export default function App() {
       </div>
       <div className="lib-list">
         {libFilter === 'all' ? allSongsRow : null}
+        {libFilter === 'all' ? downloadsRow : null}
         {libraryItems.map(libraryRow)}
         {libFilter !== 'mine' ? youtubeCard : null}
         {libFilter === 'mine' && !libraryItems.length ? (
@@ -1101,15 +1242,20 @@ export default function App() {
   const heroHue = hueOf(view ? view.id : viewId);
 
   const listView = () => {
-    const songs = view ? playlistSongs(view) : lib.songs;
-    const from = view ? view.id : ALL_SONGS;
+    const isDownloads = !view && viewId === DOWNLOADS;
+    const songs = view ? playlistSongs(view) : isDownloads ? downloadedSongs : lib.songs;
+    const from = view ? view.id : isDownloads ? DOWNLOADS : ALL_SONGS;
     const isYt = view && view.source === 'youtube';
     return (
-      <div className="page" style={{ '--hue': heroHue }}>
+      <div className="page" style={{ '--hue': isDownloads ? 150 : heroHue }}>
         <header className="hero">
           {view && view.ytId === 'LIKED' ? (
             <span className="cover hero-cover liked">
               <Heart size="40%" fill="currentColor" />
+            </span>
+          ) : isDownloads ? (
+            <span className="cover hero-cover downloads">
+              <CircleArrowDown size="42%" />
             </span>
           ) : view ? (
             <Cover songs={songs} seed={view.id} icon={ListMusic} className="hero-cover" />
@@ -1122,10 +1268,11 @@ export default function App() {
             <span className="hero-kind">
               {isYt ? <><YouTubeIcon size={14} /> YouTube playlist</> : view ? 'Playlist' : 'Library'}
             </span>
-            <h1>{view ? view.name : 'All songs'}</h1>
+            <h1>{view ? view.name : isDownloads ? 'Downloaded' : 'All songs'}</h1>
             <span className="hero-meta">
               {isYt && lib.account ? <b>{lib.account.name} · </b> : null}
               {songs.length} song{songs.length === 1 ? '' : 's'}
+              {isDownloads ? ' · saved in this browser, play without internet' : ''}
             </span>
           </div>
         </header>
@@ -1161,7 +1308,21 @@ export default function App() {
             onPlay={(i) => startQueue(viewSongs, i, shuffle, from)}
             onMore={openMenu}
             onDownload={downloadSong}
+            isSaved={isSaved}
+            downloading={downloading}
+            canPlay={canPlay}
           />
+        ) : isDownloads && !filter ? (
+          <div className="empty">
+            <CircleArrowDown size={44} strokeWidth={1.4} />
+            <b>No downloads yet</b>
+            <span>Tap the download button on a song from Search or an audio link. It’s saved here and plays without internet.</span>
+            <div className="empty-actions">
+              <button className="pill light" onClick={() => go(SEARCH)}>
+                <Search size={16} /> Search music
+              </button>
+            </div>
+          </div>
         ) : (
           <div className="empty">
             <Disc3 size={44} strokeWidth={1.4} />
@@ -1186,7 +1347,10 @@ export default function App() {
   };
 
   const homeView = () => {
-    const quick = [{ id: ALL_SONGS, name: 'All songs', songs: lib.songs, all: true }, ...lib.playlists.slice(0, 7).map((p) => ({ id: p.id, name: p.name, songs: playlistSongs(p), liked: p.ytId === 'LIKED' }))];
+    const quick = [
+      { id: ALL_SONGS, name: 'All songs', songs: lib.songs, all: true },
+      ...(downloadedSongs.length ? [{ id: DOWNLOADS, name: 'Downloaded', songs: downloadedSongs, downloads: true }] : []),
+      ...lib.playlists.slice(0, downloadedSongs.length ? 6 : 7).map((p) => ({ id: p.id, name: p.name, songs: playlistSongs(p), liked: p.ytId === 'LIKED' }))];
     return (
       <div className="page" style={{ '--hue': 330 }}>
         <header className="home-head">
@@ -1203,6 +1367,10 @@ export default function App() {
               ) : q.liked ? (
                 <span className="cover liked">
                   <Heart size={20} fill="currentColor" />
+                </span>
+              ) : q.downloads ? (
+                <span className="cover downloads">
+                  <CircleArrowDown size={22} />
                 </span>
               ) : (
                 <Cover songs={q.songs} seed={q.id} icon={ListMusic} />
@@ -1361,6 +1529,8 @@ export default function App() {
         ))}
       </div>
 
+      {search.error ? <p className="error">{search.error}</p> : null}
+
       {!search.q ? (
         <section className="shelf">
           <div className="shelf-head">
@@ -1375,8 +1545,6 @@ export default function App() {
           </div>
         </section>
       ) : null}
-
-      {search.error ? <p className="error">{search.error}</p> : null}
 
       {search.loading ? (
         <div className="empty">
@@ -1400,6 +1568,9 @@ export default function App() {
             onAdd={addSongObject}
             inLibrary={inLibrary}
             onDownload={downloadSong}
+            isSaved={isSaved}
+            downloading={downloading}
+            canPlay={canPlay}
           />
         </>
       ) : search.q ? (
@@ -1456,6 +1627,11 @@ export default function App() {
             TubeTunes
           </span>
           <div className="topbar-actions">
+            {!online ? (
+              <button className="pill offline" title="No internet: downloaded songs still play" onClick={() => go(DOWNLOADS)}>
+                <WifiOff size={16} /> <span className="hide-sm">Offline</span>
+              </button>
+            ) : null}
             {installPrompt ? (
               <button className="pill" title="Install TubeTunes as an app on this device" onClick={installApp}>
                 <MonitorDown size={16} /> <span className="hide-sm">Install app</span>
@@ -1498,9 +1674,13 @@ export default function App() {
               {SOURCE_LABELS[sourceOf(current)]}
             </span>
             <span className="panel-links">
-              {canDownload(current) ? (
-                <button onClick={() => downloadSong(current)}>
-                  <Download size={13} /> Download
+              {savedIds.has(current.id) ? (
+                <button onClick={() => go(DOWNLOADS)}>
+                  <CircleCheck size={13} /> Downloaded
+                </button>
+              ) : canDownload(current) ? (
+                <button onClick={() => downloadSong(current)} disabled={!!downloading[current.id]}>
+                  <Download size={13} /> {downloading[current.id] ? 'Downloading…' : 'Download'}
                 </button>
               ) : null}
               <a href={pageUrlOf(current)} target="_blank" rel="noopener noreferrer">
@@ -1599,7 +1779,7 @@ export default function App() {
               </button>
               <div className="np-from">
                 <span>Playing from</span>
-                <b>{queueFrom && lib.playlists.find((p) => p.id === queueFrom) ? lib.playlists.find((p) => p.id === queueFrom).name : queueFrom === 'search' ? 'Search' : queueFrom === ALL_SONGS ? 'All songs' : 'TubeTunes'}</b>
+                <b>{queueFrom && lib.playlists.find((p) => p.id === queueFrom) ? lib.playlists.find((p) => p.id === queueFrom).name : queueFrom === 'search' ? 'Search' : queueFrom === ALL_SONGS ? 'All songs' : queueFrom === DOWNLOADS ? 'Downloaded' : 'TubeTunes'}</b>
               </div>
               <button className="ibtn" title="More" onClick={(e) => openMenu(current, e)}>
                 <Ellipsis size={24} />
@@ -1622,9 +1802,13 @@ export default function App() {
                 {SOURCE_LABELS[sourceOf(current)]}
               </span>
               <span>
-                {canDownload(current) ? (
-                  <button className="ibtn" title="Download MP3" onClick={() => downloadSong(current)}>
-                    <Download size={20} />
+                {savedIds.has(current.id) ? (
+                  <span className="ibtn saved" title="Downloaded: plays without internet">
+                    <CircleCheck size={20} />
+                  </span>
+                ) : canDownload(current) ? (
+                  <button className="ibtn" title="Download" onClick={() => downloadSong(current)} disabled={!!downloading[current.id]}>
+                    {downloading[current.id] ? <LoaderCircle size={20} className="spin" /> : <Download size={20} />}
                   </button>
                 ) : null}
                 <a className="ibtn" href={pageUrlOf(current)} target="_blank" rel="noopener noreferrer" title="Open source page">
@@ -1653,6 +1837,8 @@ export default function App() {
           onEdit={menuAction(editSong)}
           onOpen={menuAction((s) => window.open(pageUrlOf(s), '_blank', 'noopener'))}
           onDownload={menuAction(downloadSong)}
+          saved={savedIds.has(menu.song.id)}
+          onRemoveDownload={menuAction(removeDownload)}
           onAdd={(pl) => menuAction((s) => addToPlaylist(s, pl))()}
           onNew={menuAction((s) => newPlaylist([s], (pl) => showToast(`Added to "${pl.name}"`)))}
           onRemove={menuAction(removeFromPlaylist)}
@@ -1685,7 +1871,7 @@ export default function App() {
   );
 }
 
-function SongMenu({ menu, inLibrary, playlists, inMyPlaylist, onPlayNext, onAddToLibrary, onEdit, onOpen, onDownload, onAdd, onNew, onRemove, onDelete }) {
+function SongMenu({ menu, inLibrary, playlists, inMyPlaylist, onPlayNext, onAddToLibrary, onEdit, onOpen, onDownload, saved, onRemoveDownload, onAdd, onNew, onRemove, onDelete }) {
   const ref = useRef(null);
   const [pos, setPos] = useState({ left: menu.x, top: menu.y, visibility: 'hidden' });
   const [picking, setPicking] = useState(false);
@@ -1745,9 +1931,13 @@ function SongMenu({ menu, inLibrary, playlists, inMyPlaylist, onPlayNext, onAddT
               Edit details
             </Item>
           ) : null}
-          {canDownload(menu.song) ? (
+          {saved ? (
+            <Item icon={CircleMinus} onClick={onRemoveDownload}>
+              Remove download
+            </Item>
+          ) : canDownload(menu.song) ? (
             <Item icon={Download} onClick={onDownload}>
-              Download MP3
+              Download
             </Item>
           ) : null}
           <Item icon={ExternalLink} onClick={onOpen}>

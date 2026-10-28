@@ -225,6 +225,12 @@ h1, h2, h3 { margin: 0; letter-spacing: -0.02em; }
   background: linear-gradient(135deg, var(--accent), #f59e0b);
   color: #fff;
 }
+.cover.downloads {
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, #0e7a4f, #34d399);
+  color: #fff;
+}
 
 /* ---------- Main ---------- */
 .main { overflow-y: auto; position: relative; overscroll-behavior: contain; scrollbar-width: thin; }
@@ -532,6 +538,13 @@ h1, h2, h3 { margin: 0; letter-spacing: -0.02em; }
 .panel-source a:hover, .panel-links button:hover { color: var(--text); text-decoration: underline; }
 .col-actions .dl { opacity: 0; }
 .track:hover .dl, .dl:focus-visible { opacity: 1; }
+/* Downloaded songs: always show the green tick */
+.col-actions .dl.saved, .col-actions .dl.busy { opacity: 1; }
+.ibtn.saved { color: #1ed760; cursor: default; }
+.ibtn.saved:hover { color: #1ed760; }
+/* Offline: songs that aren't downloaded can't play */
+.track.unavailable { opacity: 0.4; }
+.pill.offline { background: rgba(245, 158, 11, 0.16); color: #fbbf24; }
 .panel-queue { background: var(--surface-2); border-radius: 8px; padding: 14px 8px 8px; }
 .panel-queue > b { display: block; padding: 0 8px 8px; }
 
