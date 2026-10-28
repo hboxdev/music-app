@@ -42,7 +42,7 @@ import {
 } from 'lucide-react';
 import { loadLibrary, saveLibrary } from './storage';
 import { listSaved, removeOffline, saveOffline, savedBlob } from './offline';
-import { getAccessToken, googleConfigured, initGoogle, signOutGoogle } from './google';
+import { cachedAccessToken, getAccessToken, googleConfigured, initGoogle, signOutGoogle } from './google';
 import { loadYouTubeApi, readPlaylistIds } from './player';
 import { Card, Cover, Equalizer, HeartButton, Shelf, TrackTable, YouTubeIcon, fmtTime, hueOf } from './ui';
 import {
@@ -52,7 +52,7 @@ import {
   fetchPlaylistTitle,
   fetchVideoInfo,
 } from '../shared/youtube';
-import { mergeSync, removeSynced, syncYouTube } from '../shared/ytsync';
+import { mergeSync, removeSynced, searchYouTube, syncYouTube, topYouTube } from '../shared/ytsync';
 import {
   SOURCE_LABELS,
   archiveItemTracks,
@@ -67,6 +67,7 @@ import {
   pageUrlOf,
   popularArchive,
   popularJamendo,
+  regionOf,
   resolveAudius,
   searchArchive,
   searchAudius,
@@ -74,11 +75,17 @@ import {
   searchRadio,
   sourceOf,
   streamUrlOf,
+  suggestSongs,
   topRadio,
   trendingAudius,
 } from '../shared/sources';
 
 const JAMENDO_CLIENT_ID = import.meta.env.VITE_JAMENDO_CLIENT_ID || '';
+// Optional key for searching YouTube without signing in (Google Cloud → Credentials → API key)
+const YOUTUBE_API_KEY = import.meta.env.VITE_YOUTUBE_API_KEY || '';
+const REGION = regionOf(navigator.language);
+const youtubeAuth = () => (YOUTUBE_API_KEY ? { key: YOUTUBE_API_KEY } : cachedAccessToken());
+const NO_YOUTUBE_SEARCH = 'Connect YouTube (in Your Library) to search YouTube.';
 
 // Views
 const HOME = 'home';
@@ -187,6 +194,8 @@ export default function App() {
   const [search, setSearch] = useState({ q: '', source: 'all', results: [], loading: false, error: '', heading: '' });
   const [searchText, setSearchText] = useState('');
   const searchSeq = useRef(0);
+  // Song names suggested while typing in Search
+  const [suggest, setSuggest] = useState({ items: [], open: false, active: -1 });
   const [home, setHome] = useState({ trending: [], fresh: [], radio: [], loading: true });
 
   // Playback
@@ -736,7 +745,17 @@ export default function App() {
       return;
     }
     setSearch((s) => ({ ...s, q, source, loading: true, error: '' }));
-    // "All sources" means songs; radio stations only show under Radio
+    // "All sources" means songs; radio stations only show under Radio.
+    // YouTube has the original releases, so its results come first.
+    const ytAuth = youtubeAuth();
+    const ytTask =
+      source === 'youtube' || (source === 'all' && ytAuth)
+        ? ytAuth
+          ? q
+            ? searchYouTube(q, ytAuth)
+            : topYouTube(ytAuth, REGION)
+          : Promise.reject(new Error(NO_YOUTUBE_SEARCH))
+        : null;
     const tasks = [];
     if (source === 'all' || source === 'audius') tasks.push(q ? searchAudius(q) : trendingAudius());
     if (source === 'jamendo' || (source === 'all' && JAMENDO_CLIENT_ID)) {
@@ -744,15 +763,55 @@ export default function App() {
     }
     if (source === 'all' || source === 'archive') tasks.push(q ? searchArchive(q) : popularArchive());
     if (source === 'radio') tasks.push(q ? searchRadio(q) : topRadio());
-    const settled = await Promise.allSettled(tasks);
+    const [yt, ...settled] = await Promise.allSettled([ytTask || Promise.resolve([]), ...tasks]);
     if (seq !== searchSeq.current) return;
     setSearch((s) => ({
       ...s,
-      results: interleave(settled.filter((r) => r.status === 'fulfilled').map((r) => r.value)),
+      results: [
+        ...(yt.status === 'fulfilled' ? yt.value : []),
+        ...interleave(settled.filter((r) => r.status === 'fulfilled').map((r) => r.value)),
+      ],
       loading: false,
-      error: settled.filter((r) => r.status === 'rejected').map((r) => r.reason.message).join(' '),
+      error: [yt, ...settled].filter((r) => r.status === 'rejected').map((r) => r.reason.message).join(' '),
       heading: q ? `Results for “${q}”` : source === 'radio' ? 'Popular stations' : 'Trending now',
     }));
+  };
+
+  useEffect(() => {
+    const term = searchText.trim();
+    if (viewId !== SEARCH || !suggest.open || !online || term.length < 2) return;
+    let alive = true;
+    const timer = setTimeout(() => {
+      suggestSongs(term, REGION)
+        .then((items) => alive && setSuggest((s) => ({ ...s, items, active: -1 })))
+        .catch(() => {});
+    }, 250);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [searchText, viewId, suggest.open, online]);
+
+  const closeSuggest = () => setSuggest({ items: [], open: false, active: -1 });
+
+  const submitSearch = (q) => {
+    closeSuggest();
+    setSearchText(q);
+    runSearch(q, search.source);
+  };
+
+  const onSearchKey = (e) => {
+    const { items, active, open } = suggest;
+    if (!open || !items.length) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const step = e.key === 'ArrowDown' ? 1 : -1;
+      // Cycles through the suggestions and back to the typed text (-1)
+      setSuggest((s) => ({ ...s, active: ((s.active + 1 + step + items.length + 1) % (items.length + 1)) - 1 }));
+    } else if (e.key === 'Enter' && active >= 0 && active < items.length) {
+      e.preventDefault();
+      submitSearch(items[active].query);
+    } else if (e.key === 'Escape') closeSuggest();
   };
 
   const searchFor = (q) => {
@@ -1562,15 +1621,21 @@ export default function App() {
         className="search-bar"
         onSubmit={(e) => {
           e.preventDefault();
-          runSearch(searchText.trim(), search.source);
+          submitSearch(searchText.trim());
         }}
       >
         <Search size={20} />
         <input
           type="search"
           value={searchText}
-          onChange={(e) => setSearchText(e.target.value)}
+          onChange={(e) => {
+            setSearchText(e.target.value);
+            setSuggest((s) => ({ ...s, open: true, items: e.target.value.trim().length < 2 ? [] : s.items }));
+          }}
+          onKeyDown={onSearchKey}
+          onBlur={closeSuggest}
           placeholder="What do you want to listen to?"
+          autoComplete="off"
           autoFocus
         />
         {searchText ? (
@@ -1580,17 +1645,40 @@ export default function App() {
             title="Clear"
             onClick={() => {
               setSearchText('');
+              closeSuggest();
               runSearch('', search.source);
             }}
           >
             <X size={18} />
           </button>
         ) : null}
+        {suggest.open && suggest.items.length ? (
+          // mousedown keeps focus in the input, so the list isn't closed by blur first
+          <ul className="suggest" role="listbox" onMouseDown={(e) => e.preventDefault()}>
+            {suggest.items.map((it, i) => (
+              <li
+                key={it.query}
+                role="option"
+                aria-selected={i === suggest.active}
+                className={i === suggest.active ? 'on' : ''}
+                onMouseEnter={() => setSuggest((s) => ({ ...s, active: i }))}
+                onClick={() => submitSearch(it.query)}
+              >
+                <Search size={16} />
+                <span>
+                  <b>{it.title}</b>
+                  <small>{it.artist}</small>
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </form>
 
       <div className="chips">
         {[
           ['all', 'All sources'],
+          ['youtube', 'YouTube'],
           ['audius', 'Audius'],
           ['jamendo', 'Jamendo'],
           ['archive', 'Internet Archive'],
@@ -1634,7 +1722,9 @@ export default function App() {
           <p className="hint">
             {search.source === 'radio'
               ? 'Live stations from around the world. Search a station name or a genre like bollywood or lofi.'
-              : 'Songs from Search keep playing when your phone is locked. Internet Archive songs can be downloaded.'}
+              : search.source === 'youtube'
+              ? 'Original songs from YouTube. They play in YouTube’s player and can’t be downloaded.'
+              : 'YouTube songs come first. Songs from the free sources keep playing when your phone is locked, and Internet Archive songs can be downloaded.'}
           </p>
           <TrackTable
             songs={search.results}

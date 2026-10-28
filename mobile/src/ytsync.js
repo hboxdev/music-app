@@ -16,9 +16,11 @@ const FRIENDLY = {
   channelNotFound: 'This Google account has no YouTube channel yet, so it has no playlists.',
 };
 
-async function get(path, params, token) {
-  const res = await fetch(`${API}/${path}?${new URLSearchParams(params)}`, {
-    headers: { Authorization: `Bearer ${token}` },
+// auth is an OAuth access token, or { key } for an API key (public data only)
+async function get(path, params, auth) {
+  const key = auth && typeof auth === 'object' ? auth.key : null;
+  const res = await fetch(`${API}/${path}?${new URLSearchParams(key ? { ...params, key } : params)}`, {
+    headers: key ? {} : { Authorization: `Bearer ${auth}` },
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -84,6 +86,67 @@ export function fetchLikedVideos(token) {
     title: v.snippet.title,
     artist: cleanArtist(v.snippet.channelTitle),
   }));
+}
+
+// ---------- Searching YouTube for songs ----------
+// A search costs 100 of the project's 10,000 daily quota units, so results are
+// kept for the session. The chart of popular music costs 1 unit.
+
+const MUSIC_CATEGORY = '10';
+const searchCache = new Map();
+
+const ENTITIES = { amp: '&', quot: '"', apos: "'", lt: '<', gt: '>' };
+const decodeHtml = (s) =>
+  (s || '').replace(/&(#\d+|#x[0-9a-f]+|\w+);/gi, (m, e) =>
+    e[0] === '#' ? String.fromCodePoint(e[1].toLowerCase() === 'x' ? parseInt(e.slice(2), 16) : +e.slice(1)) : ENTITIES[e] ?? m
+  );
+
+const fromVideo = (id, snippet) => ({
+  id,
+  source: 'youtube',
+  title: decodeHtml(snippet.title),
+  artist: cleanArtist(decodeHtml(snippet.channelTitle)),
+});
+
+async function cached(key, load) {
+  if (!searchCache.has(key)) {
+    const p = load();
+    searchCache.set(key, p);
+    p.catch(() => searchCache.delete(key));
+  }
+  return searchCache.get(key);
+}
+
+// Music videos that can be played inside the app
+export function searchYouTube(query, auth, limit = 25) {
+  return cached(`q:${query.toLowerCase()}`, async () => {
+    const data = await get(
+      'search',
+      {
+        part: 'snippet',
+        type: 'video',
+        videoCategoryId: MUSIC_CATEGORY,
+        videoEmbeddable: 'true',
+        videoSyndicated: 'true',
+        maxResults: String(limit),
+        q: query,
+      },
+      auth
+    );
+    return (data.items || []).map((it) => fromVideo(it.id.videoId, it.snippet));
+  });
+}
+
+// Most popular music videos in a country (ISO code such as PK, IN or US)
+export function topYouTube(auth, region = 'US', limit = 25) {
+  return cached(`top:${region}`, async () => {
+    const data = await get(
+      'videos',
+      { part: 'snippet,status', chart: 'mostPopular', videoCategoryId: MUSIC_CATEGORY, regionCode: region, maxResults: String(limit) },
+      auth
+    );
+    return (data.items || []).filter((v) => !v.status || v.status.embeddable !== false).map((v) => fromVideo(v.id, v.snippet));
+  });
 }
 
 // Reads the account name, every playlist the user owns, and their liked videos

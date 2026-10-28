@@ -46,17 +46,19 @@ import {
   pageUrlOf,
   popularArchive,
   popularJamendo,
+  regionOf,
   resolveAudius,
   searchArchive,
   searchAudius,
   searchJamendo,
   searchRadio,
   streamUrlOf,
+  suggestSongs,
   topRadio,
   trendingAudius,
 } from './src/sources';
-import { JAMENDO_CLIENT_ID } from './src/config';
-import { mergeSync, removeSynced, syncYouTube } from './src/ytsync';
+import { JAMENDO_CLIENT_ID, YOUTUBE_API_KEY } from './src/config';
+import { mergeSync, removeSynced, searchYouTube, syncYouTube, topYouTube } from './src/ytsync';
 import { dropToken, getAccessToken, googleAvailable, signOutGoogle } from './src/google';
 import SongRow from './src/SongRow';
 import SongMenu from './src/SongMenu';
@@ -96,6 +98,19 @@ function choose(title, message, buttons) {
 
 const DOWNLOADS = 'downloads';
 
+const REGION = regionOf(Intl.DateTimeFormat().resolvedOptions().locale);
+const NO_YOUTUBE_SEARCH = 'Connect YouTube (in Playlists) to search YouTube.';
+
+// API key if set, otherwise the signed-in user's token (never shows the sign-in screen)
+async function youtubeAuth() {
+  if (YOUTUBE_API_KEY) return { key: YOUTUBE_API_KEY };
+  try {
+    return await getAccessToken({ interactive: false });
+  } catch {
+    return null;
+  }
+}
+
 // Mixes several result lists: a1, b1, a2, b2, ...
 function interleave(lists) {
   const out = [];
@@ -126,6 +141,8 @@ function Main() {
   const [searchText, setSearchText] = useState('');
   const [search, setSearch] = useState({ q: '', source: 'all', results: [], loading: false, error: '', heading: '' });
   const searchSeq = useRef(0);
+  const [suggestions, setSuggestions] = useState([]);
+  const [suggestOpen, setSuggestOpen] = useState(false);
   const [openPlaylistId, setOpenPlaylistId] = useState(null);
   const [filter, setFilter] = useState('');
 
@@ -381,7 +398,18 @@ function Main() {
   const runSearch = async (q, source) => {
     const seq = ++searchSeq.current;
     setSearch((s) => ({ ...s, q, source, loading: true, error: '' }));
-    // "All" means songs; radio stations only show under Radio
+    // "All" means songs; radio stations only show under Radio.
+    // YouTube has the original releases, so its results come first.
+    const wantsYouTube = source === 'youtube' || source === 'all';
+    const ytAuth = wantsYouTube ? await youtubeAuth() : null;
+    const ytTask =
+      wantsYouTube && (ytAuth || source === 'youtube')
+        ? ytAuth
+          ? q
+            ? searchYouTube(q, ytAuth)
+            : topYouTube(ytAuth, REGION)
+          : Promise.reject(new Error(NO_YOUTUBE_SEARCH))
+        : null;
     const tasks = [];
     if (source === 'all' || source === 'audius') tasks.push(q ? searchAudius(q) : trendingAudius());
     if (source === 'jamendo' || (source === 'all' && JAMENDO_CLIENT_ID)) {
@@ -389,18 +417,46 @@ function Main() {
     }
     if (source === 'all' || source === 'archive') tasks.push(q ? searchArchive(q) : popularArchive());
     if (source === 'radio') tasks.push(q ? searchRadio(q) : topRadio());
-    const settled = await Promise.allSettled(tasks);
+    const [yt, ...settled] = await Promise.allSettled([ytTask || Promise.resolve([]), ...tasks]);
     if (seq !== searchSeq.current) return;
     setSearch((s) => ({
       ...s,
-      results: interleave(settled.filter((r) => r.status === 'fulfilled').map((r) => r.value)),
+      results: [
+        ...(yt.status === 'fulfilled' ? yt.value : []),
+        ...interleave(settled.filter((r) => r.status === 'fulfilled').map((r) => r.value)),
+      ],
       loading: false,
-      error: settled
+      error: [yt, ...settled]
         .filter((r) => r.status === 'rejected')
         .map((r) => r.reason.message)
         .join(' '),
       heading: q ? `Results for “${q}”` : source === 'radio' ? 'Popular stations' : 'Trending now',
     }));
+  };
+
+  // Song names suggested while typing
+  useEffect(() => {
+    const term = searchText.trim();
+    if (!suggestOpen || term.length < 2) {
+      setSuggestions([]);
+      return;
+    }
+    let alive = true;
+    const timer = setTimeout(() => {
+      suggestSongs(term, REGION)
+        .then((items) => alive && setSuggestions(items))
+        .catch(() => {});
+    }, 250);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [searchText, suggestOpen]);
+
+  const submitSearch = (q) => {
+    setSuggestOpen(false);
+    setSearchText(q);
+    runSearch(q, search.source);
   };
 
   const openSearchTab = () => {
@@ -855,24 +911,48 @@ function Main() {
       <Text style={styles.searchHint}>
         {search.source === 'radio'
           ? 'Live stations from around the world. Search a station name or a genre like bollywood or lofi.'
-          : 'Songs from Search keep playing when your phone is locked. Internet Archive songs can be downloaded.'}
+          : search.source === 'youtube'
+          ? 'Original songs from YouTube. They play in YouTube’s player and can’t be downloaded.'
+          : 'YouTube songs come first. Songs from the free sources keep playing when your phone is locked.'}
       </Text>
       <View style={styles.search}>
         <Ionicons name="search" size={16} color={colors.muted} />
         <TextInput
           style={styles.searchInput}
           value={searchText}
-          onChangeText={setSearchText}
+          onChangeText={(text) => {
+            setSearchText(text);
+            setSuggestOpen(true);
+          }}
+          onBlur={() => setSuggestOpen(false)}
           placeholder="Song, artist or mood: lofi, workout…"
           placeholderTextColor={colors.muted}
           returnKeyType="search"
-          onSubmitEditing={() => runSearch(searchText.trim(), search.source)}
+          onSubmitEditing={() => submitSearch(searchText.trim())}
           clearButtonMode="while-editing"
         />
       </View>
+      {suggestOpen && suggestions.length ? (
+        <View style={styles.suggest}>
+          {suggestions.map((it) => (
+            <Pressable
+              key={it.query}
+              onPress={() => submitSearch(it.query)}
+              style={({ pressed }) => [styles.suggestRow, pressed && styles.rowPressed]}
+            >
+              <Ionicons name="search" size={16} color={colors.muted} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.suggestTitle} numberOfLines={1}>{it.title}</Text>
+                <Text style={styles.suggestArtist} numberOfLines={1}>{it.artist}</Text>
+              </View>
+            </Pressable>
+          ))}
+        </View>
+      ) : null}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips} keyboardShouldPersistTaps="handled">
         {[
           ['all', 'All'],
+          ['youtube', 'YouTube'],
           ['audius', 'Audius'],
           ['jamendo', 'Jamendo'],
           ['archive', 'Archive'],
@@ -1337,6 +1417,11 @@ const styles = StyleSheet.create({
     backgroundColor: colors.panel,
   },
   searchInput: { flex: 1, color: colors.text, paddingVertical: 9, fontSize: 15 },
+  suggest: { marginHorizontal: 12, marginBottom: 6, paddingVertical: 4, borderRadius: 10, backgroundColor: colors.panel },
+  suggestRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 8, paddingHorizontal: 12 },
+  rowPressed: { backgroundColor: colors.raised },
+  suggestTitle: { color: colors.text, fontSize: 14, fontWeight: '600' },
+  suggestArtist: { color: colors.muted, fontSize: 12, marginTop: 1 },
 
   empty: { alignItems: 'center', paddingVertical: 48, paddingHorizontal: 32, gap: 8 },
   emptyTitle: { color: colors.text, fontSize: 17, fontWeight: '700' },

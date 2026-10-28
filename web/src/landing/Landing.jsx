@@ -60,7 +60,7 @@ const faqs = [
   ],
   [
     'Where do the songs in Search come from?',
-    'From Audius and Jamendo, two free services where artists share their music for streaming. You’ll find lots of independent artists there; big label releases usually aren’t available.',
+    'Original releases come from YouTube and play in YouTube’s own player. Free music comes from Audius, Jamendo and the Internet Archive, where artists share their songs for streaming, plus live radio stations. As you type, TubeTunes suggests song names.',
   ],
   ['Is it free?', 'Yes.'],
 ];

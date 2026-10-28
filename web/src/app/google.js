@@ -57,6 +57,12 @@ export function initGoogle() {
   });
 }
 
+// The current token, if the user signed in this session. Never opens a popup.
+export function cachedAccessToken() {
+  const t = readToken();
+  return t ? t.value : null;
+}
+
 // Call directly from a click handler
 export function getAccessToken({ forceNew = false } = {}) {
   const cached = !forceNew && readToken();

@@ -431,6 +431,7 @@ h1, h2, h3 { margin: 0; letter-spacing: -0.02em; }
 
 /* Search */
 .search-bar {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -447,6 +448,25 @@ h1, h2, h3 { margin: 0; letter-spacing: -0.02em; }
 .search-bar:focus-within { border-color: var(--text); background: #2e2e34; }
 .search-bar input { flex: 1; background: none; border: 0; outline: 0; font-size: 16px; color: var(--text); min-width: 0; }
 .search-bar input::-webkit-search-cancel-button { display: none; }
+.suggest {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 30;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  border-radius: 14px;
+  background: #282830;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+}
+.suggest li { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border-radius: 8px; cursor: pointer; color: var(--muted); }
+.suggest li.on { background: rgba(255, 255, 255, 0.08); }
+.suggest span { display: flex; flex-direction: column; min-width: 0; }
+.suggest b, .suggest small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.suggest b { color: var(--text); font-weight: 600; font-size: 14px; }
+.suggest small { font-size: 12px; }
 .page > .chips { margin-bottom: 24px; }
 .hint { color: var(--muted); font-size: 13px; margin: -6px 0 12px; }
 .error { color: var(--danger); }

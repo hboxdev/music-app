@@ -282,6 +282,35 @@ export async function topRadio(limit = 25) {
   return playableStations(await radio('stations/search', { tag: 'music', limit: String(limit * 2) }), limit);
 }
 
+// ---------- Search suggestions (iTunes Search API, no key needed) ----------
+
+// The user's country, for example 'PK' from 'en-PK'
+export function regionOf(locale) {
+  const m = (locale || '').match(/[-_]([A-Za-z]{2})\b/);
+  return m ? m[1].toUpperCase() : 'US';
+}
+
+// Real song names as you type: [{ title, artist, query }]
+export async function suggestSongs(term, country = 'US', limit = 8) {
+  const params = new URLSearchParams({ term, country, media: 'music', entity: 'song', limit: String(limit * 2) });
+  const res = await fetch(`https://itunes.apple.com/search?${params}`);
+  if (!res.ok) return [];
+  const json = await res.json();
+  const seen = new Set();
+  const out = [];
+  for (const t of json.results || []) {
+    // "Tum Hi Ho (From "Aashiqui 2")" → "Tum Hi Ho"
+    const title = (t.trackName || '').replace(/\s*[([](from|feat\.?|ft\.?)\b[^)\]]*[)\]]/gi, '').trim();
+    const artist = (t.artistName || '').split(/,|&/)[0].trim();
+    const key = `${title}|${artist}`.toLowerCase();
+    if (!title || seen.has(key)) continue;
+    seen.add(key);
+    out.push({ title, artist, query: `${title} ${artist}`.trim() });
+    if (out.length === limit) break;
+  }
+  return out;
+}
+
 // ---------- Direct audio links ----------
 
 function hash(str) {

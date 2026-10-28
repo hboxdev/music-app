@@ -19,12 +19,16 @@ TubeTunes turns a person's YouTube playlists into a music app. It has three part
 
 | Source | How songs get in | Plays with the screen locked? |
 |---|---|---|
-| YouTube | Sync, or paste a song/playlist link | No (YouTube's player stops). TubeTunes keeps the screen on instead |
+| YouTube | Sync, paste a song/playlist link, or **Search** (original releases, listed first) | No (YouTube's player stops). TubeTunes keeps the screen on instead |
 | Audius | **Search** tab, or paste an `audius.co` link | Yes, with lock-screen controls |
 | Jamendo | **Search** tab, or paste a `jamendo.com/track/…` link | Yes, with lock-screen controls |
 | Internet Archive | **Search** tab, or paste an `archive.org/details/…` album link (imports every song as a playlist) | Yes, with lock-screen controls. Songs can be downloaded |
 | Live radio ([radio-browser.info](https://www.radio-browser.info)) | **Search** tab → Live radio (station name or genre) | Yes. Live, so no downloads or seeking |
 | Direct audio link | Paste a link to an `.mp3` (or other audio) file you have the right to play | Yes |
+
+Search suggests real song names as you type (from the free iTunes Search API, no key needed).
+
+YouTube search uses the YouTube Data API: the signed-in user's token, or an optional API key (`VITE_YOUTUBE_API_KEY` in `web/.env`, `YOUTUBE_API_KEY` in `mobile/src/config.js`) so it also works without signing in. A search costs 100 of the project's 10,000 daily quota units (about 100 searches a day; results are cached for the session), so ask Google for more quota before launch.
 
 Audius, the Internet Archive and live radio need no key. Jamendo needs a free Client ID: sign up at <https://devportal.jamendo.com>, create an app, and put its Client ID in:
 

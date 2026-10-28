@@ -4,3 +4,8 @@ export const GOOGLE_WEB_CLIENT_ID = '349433975025-i02qlvpb6bssj35smsmh0k4ubrm24r
 
 // Free Jamendo Client ID from https://devportal.jamendo.com (adds Jamendo to Search).
 export const JAMENDO_CLIENT_ID = '91f7048a';
+
+// Optional YouTube Data API key, so Search can find YouTube songs without signing in
+// (Google Cloud → APIs & Services → Credentials → Create credentials → API key).
+// Without it, YouTube search works once the user has connected YouTube.
+export const YOUTUBE_API_KEY = '';
