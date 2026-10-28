@@ -19,6 +19,7 @@ import {
   LoaderCircle,
   LogOut,
   Maximize2,
+  MicVocal,
   MonitorDown,
   PanelRight,
   Pause,
@@ -44,6 +45,7 @@ import { loadLibrary, saveLibrary } from './storage';
 import { listSaved, removeOffline, saveOffline, savedBlob } from './offline';
 import { cachedAccessToken, getAccessToken, googleConfigured, initGoogle, signOutGoogle } from './google';
 import { loadYouTubeApi, readPlaylistIds } from './player';
+import Lyrics from './Lyrics';
 import { Card, Cover, Equalizer, HeartButton, Shelf, TrackTable, YouTubeIcon, fmtTime, hueOf } from './ui';
 import {
   extractPlaylistId,
@@ -665,6 +667,14 @@ export default function App() {
     try {
       history.pushState({ nowPlaying: true }, '');
     } catch {}
+  };
+  // Opens the full-screen player at the lyrics
+  const openLyrics = () => {
+    openNowPlaying();
+    setTimeout(() => {
+      const el = document.querySelector('.np .lyrics');
+      el && el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 350);
   };
   const closeNowPlaying = () => {
     if (history.state && history.state.nowPlaying) history.back();
@@ -1616,7 +1626,7 @@ export default function App() {
   };
 
   const searchView = () => (
-    <div className="page" style={{ '--hue': 250 }}>
+    <div className="page search-page" style={{ '--hue': 250 }}>
       <form
         className="search-bar"
         onSubmit={(e) => {
@@ -1712,7 +1722,8 @@ export default function App() {
           <LoaderCircle size={34} className="spin" />
         </div>
       ) : search.results.length ? (
-        <>
+        // The key restarts the entrance animation for every new search
+        <div className="search-results" key={`${search.q}|${search.source}`}>
           <div className="shelf-head">
             <h2>{search.heading}</h2>
             <button className="pill" onClick={() => playList(search.results, 'search')}>
@@ -1739,7 +1750,7 @@ export default function App() {
             downloading={downloading}
             canPlay={canPlay}
           />
-        </>
+        </div>
       ) : search.q ? (
         <div className="empty">
           <Search size={40} strokeWidth={1.4} />
@@ -1855,6 +1866,7 @@ export default function App() {
               </a>
             </span>
           </div>
+          {!live ? <Lyrics song={current} time={time.t} duration={time.d} onSeek={seekTo} className="compact" /> : null}
           {upNext.length ? (
             <div className="panel-queue">
               <b>Next in queue</b>
@@ -1918,6 +1930,9 @@ export default function App() {
               <PanelRight size={18} />
             </button>
           ) : null}
+          <button className="ibtn" title="Lyrics" onClick={openLyrics} disabled={!current || live}>
+            <MicVocal size={18} />
+          </button>
           {volumeControl}
           <button className="ibtn" title="Full screen player" onClick={openNowPlaying} disabled={!current}>
             <Maximize2 size={17} />
@@ -1983,6 +1998,7 @@ export default function App() {
                 </a>
               </span>
             </div>
+            {!live ? <Lyrics song={current} time={time.t} duration={time.d} onSeek={seekTo} /> : null}
             {upNext.length ? (
               <section className="np-queue">
                 <h3>Up next</h3>

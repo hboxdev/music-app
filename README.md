@@ -26,6 +26,8 @@ TubeTunes turns a person's YouTube playlists into a music app. It has three part
 | Live radio ([radio-browser.info](https://www.radio-browser.info)) | **Search** tab → Live radio (station name or genre) | Yes. Live, so no downloads or seeking |
 | Direct audio link | Paste a link to an `.mp3` (or other audio) file you have the right to play | Yes |
 
+The player shows lyrics from [LRCLIB](https://lrclib.net) (free, no key). Most popular songs have synced lyrics that follow the song; tap a line to jump there. Lyrics are saved on the device once loaded, so they also show offline. Lyrics are copyrighted by their writers and LRCLIB's are added by its users, so for a large or paid app consider a licensed provider such as Musixmatch.
+
 Search suggests real song names as you type (from the free iTunes Search API, no key needed).
 
 YouTube search uses the YouTube Data API: the signed-in user's token, or an optional API key (`VITE_YOUTUBE_API_KEY` in `web/.env`, `YOUTUBE_API_KEY` in `mobile/src/config.js`) so it also works without signing in. A search costs 100 of the project's 10,000 daily quota units (about 100 searches a day; results are cached for the session), so ask Google for more quota before launch.

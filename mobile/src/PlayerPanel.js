@@ -4,6 +4,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import Slider from '@react-native-community/slider';
 import YouTubeEngine from './YouTubeEngine';
+import LyricsView from './LyricsView';
 import { colors, fmtTime } from './theme';
 import { SOURCE_LABELS, artworkOf, isYouTube, sourceOf } from './sources';
 
@@ -37,6 +38,7 @@ const PlayerPanel = forwardRef(function PlayerPanel(
   const timeRef = useRef({ t: 0, d: 0 });
   const [time, setTime] = useState({ t: 0, d: 0 });
   const [seekValue, setSeekValue] = useState(null);
+  const [showLyrics, setShowLyrics] = useState(false);
 
   const updateTime = (v) => {
     timeRef.current = v;
@@ -61,6 +63,16 @@ const PlayerPanel = forwardRef(function PlayerPanel(
   const t = audioSong && audioTime ? audioTime : time;
   const progress = t.d ? Math.min(1, t.t / t.d) : 0;
   const shownTime = seekValue ?? t.t;
+  const lyricsOn = showLyrics && !!song && !live;
+
+  const seek = (v) => {
+    if (audioSong) onSeekAudio(v);
+    else {
+      engine.current && engine.current.seekTo(v);
+      updateTime({ t: v, d: time.d });
+    }
+  };
+
   const subtitle = song
     ? `${song.artist || 'Unknown artist'}${audioSong ? ` · ${SOURCE_LABELS[sourceOf(song)]}` : ''}`
     : 'Pick a song to start';
@@ -88,8 +100,10 @@ const PlayerPanel = forwardRef(function PlayerPanel(
           <Pressable onPress={onCollapse} hitSlop={12}>
             <Ionicons name="chevron-down" size={28} color={colors.text} />
           </Pressable>
-          <Text style={styles.fullHeaderText}>Now playing</Text>
-          <View style={{ width: 28 }} />
+          <Text style={styles.fullHeaderText}>{lyricsOn ? 'Lyrics' : 'Now playing'}</Text>
+          <Pressable onPress={() => setShowLyrics(!showLyrics)} hitSlop={12} disabled={!song || live} style={(!song || live) && { opacity: 0.3 }}>
+            <Ionicons name={lyricsOn ? 'mic' : 'mic-outline'} size={24} color={lyricsOn ? colors.accent : colors.text} />
+          </Pressable>
         </View>
       ) : (
         <View style={styles.miniTrack}>
@@ -110,13 +124,14 @@ const PlayerPanel = forwardRef(function PlayerPanel(
         </View>
 
         {expanded ? (
-          <View style={styles.fullControls}>
-            <Text style={styles.fullTitle} numberOfLines={2}>
+          <View style={[styles.fullControls, lyricsOn && styles.withLyrics]}>
+            <Text style={[styles.fullTitle, lyricsOn && styles.smallTitle]} numberOfLines={lyricsOn ? 1 : 2}>
               {song ? song.title : 'Nothing playing'}
             </Text>
             <Text style={styles.fullArtist} numberOfLines={1}>
               {subtitle}
             </Text>
+            {lyricsOn ? <LyricsView song={song} time={t.t} duration={t.d} onSeek={seek} /> : null}
 
             <Slider
               style={styles.slider}
@@ -128,11 +143,7 @@ const PlayerPanel = forwardRef(function PlayerPanel(
               thumbTintColor={colors.accent}
               onValueChange={setSeekValue}
               onSlidingComplete={(v) => {
-                if (audioSong) onSeekAudio(v);
-                else {
-                  engine.current && engine.current.seekTo(v);
-                  updateTime({ t: v, d: time.d });
-                }
+                seek(v);
                 setSeekValue(null);
               }}
               disabled={!song || live}
@@ -231,9 +242,11 @@ const styles = StyleSheet.create({
   bodyFull: { flex: 1, paddingHorizontal: 20 },
   videoFull: { width: '100%', aspectRatio: 16 / 9, borderRadius: 12, overflow: 'hidden', backgroundColor: '#000' },
   fullControls: { flex: 1, justifyContent: 'center' },
+  withLyrics: { justifyContent: 'flex-start', paddingTop: 16 },
+  smallTitle: { fontSize: 18 },
   fullTitle: { color: colors.text, fontSize: 22, fontWeight: '700' },
   fullArtist: { color: colors.muted, fontSize: 16, marginTop: 6 },
-  slider: { width: '100%', height: 40, marginTop: 24 },
+  slider: { width: '100%', height: 40, marginTop: 16 },
   times: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 4 },
   time: { color: colors.muted, fontSize: 12, fontVariant: ['tabular-nums'] },
   live: { color: '#f87171', fontWeight: '800', letterSpacing: 1 },
