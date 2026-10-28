@@ -10,6 +10,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -33,19 +34,25 @@ import {
 } from './src/youtube';
 import { isSavedFile, removeOffline, saveOffline } from './src/downloads';
 import {
+  archiveItemTracks,
   artworkOf,
   canDownload,
   directAudioSong,
+  extractArchiveId,
   extractJamendoId,
   isAudiusLink,
   isYouTube,
   jamendoTrack,
   pageUrlOf,
+  popularArchive,
   popularJamendo,
   resolveAudius,
+  searchArchive,
   searchAudius,
   searchJamendo,
+  searchRadio,
   streamUrlOf,
+  topRadio,
   trendingAudius,
 } from './src/sources';
 import { JAMENDO_CLIENT_ID } from './src/config';
@@ -374,11 +381,14 @@ function Main() {
   const runSearch = async (q, source) => {
     const seq = ++searchSeq.current;
     setSearch((s) => ({ ...s, q, source, loading: true, error: '' }));
+    // "All" means songs; radio stations only show under Radio
     const tasks = [];
-    if (source !== 'jamendo') tasks.push(q ? searchAudius(q) : trendingAudius());
+    if (source === 'all' || source === 'audius') tasks.push(q ? searchAudius(q) : trendingAudius());
     if (source === 'jamendo' || (source === 'all' && JAMENDO_CLIENT_ID)) {
       tasks.push(q ? searchJamendo(q, JAMENDO_CLIENT_ID) : popularJamendo(JAMENDO_CLIENT_ID));
     }
+    if (source === 'all' || source === 'archive') tasks.push(q ? searchArchive(q) : popularArchive());
+    if (source === 'radio') tasks.push(q ? searchRadio(q) : topRadio());
     const settled = await Promise.allSettled(tasks);
     if (seq !== searchSeq.current) return;
     setSearch((s) => ({
@@ -389,7 +399,7 @@ function Main() {
         .filter((r) => r.status === 'rejected')
         .map((r) => r.reason.message)
         .join(' '),
-      heading: q ? `Results for “${q}”` : 'Trending now',
+      heading: q ? `Results for “${q}”` : source === 'radio' ? 'Popular stations' : 'Trending now',
     }));
   };
 
@@ -573,6 +583,36 @@ function Main() {
 
     if (videoId) return addYouTubeSong(videoId);
 
+    // Internet Archive album: one song, or all of them as a new playlist
+    const archiveId = extractArchiveId(url);
+    if (archiveId) {
+      setBusy('Reading the album on the Internet Archive…');
+      try {
+        const { title, songs } = await archiveItemTracks(archiveId);
+        if (!songs.length) {
+          Alert.alert("Couldn't add songs", 'That Internet Archive page has no MP3 songs.');
+          return;
+        }
+        if (songs.length === 1) return addSongObject(songs[0]);
+        const now = Date.now();
+        const playlist = { id: `pl_${now}`, name: title, source: 'local', songIds: songs.map((s) => s.id) };
+        setLib((l) => {
+          const have = new Set(l.songs.map((s) => s.id));
+          const add = songs.filter((s) => !have.has(s.id)).map((s, k) => ({ ...s, addedAt: now - k }));
+          return { ...l, songs: [...add, ...l.songs], playlists: [...l.playlists, playlist] };
+        });
+        showToast(`Imported "${title}": ${songs.length} songs`);
+        setFilter('');
+        setTab('playlists');
+        setOpenPlaylistId(playlist.id);
+      } catch (e) {
+        Alert.alert("Couldn't add songs", e.message);
+      } finally {
+        setBusy(null);
+      }
+      return;
+    }
+
     // Audius
     if (isAudiusLink(url)) {
       setBusy('Finding the track on Audius…');
@@ -604,7 +644,7 @@ function Main() {
     if (!song) {
       Alert.alert(
         'Link not recognized',
-        'Paste a link from YouTube, Audius or Jamendo, or a direct link to an MP3 or other audio file.'
+        'Paste a link from YouTube, Audius, Jamendo or the Internet Archive, or a direct link to an MP3 or other audio file.'
       );
       return;
     }
@@ -812,7 +852,11 @@ function Main() {
 
   const searchHeader = (
     <View style={styles.searchHead}>
-      <Text style={styles.searchHint}>Songs from Audius and Jamendo keep playing when your phone is locked.</Text>
+      <Text style={styles.searchHint}>
+        {search.source === 'radio'
+          ? 'Live stations from around the world. Search a station name or a genre like bollywood or lofi.'
+          : 'Songs from Search keep playing when your phone is locked. Internet Archive songs can be downloaded.'}
+      </Text>
       <View style={styles.search}>
         <Ionicons name="search" size={16} color={colors.muted} />
         <TextInput
@@ -826,11 +870,13 @@ function Main() {
           clearButtonMode="while-editing"
         />
       </View>
-      <View style={styles.chips}>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips} keyboardShouldPersistTaps="handled">
         {[
           ['all', 'All'],
           ['audius', 'Audius'],
           ['jamendo', 'Jamendo'],
+          ['archive', 'Archive'],
+          ['radio', 'Radio'],
         ].map(([key, label]) => (
           <Pressable
             key={key}
@@ -840,7 +886,7 @@ function Main() {
             <Text style={[styles.tabText, search.source === key && styles.tabTextActive]}>{label}</Text>
           </Pressable>
         ))}
-      </View>
+      </ScrollView>
       {search.error ? <Text style={styles.errorText}>{search.error}</Text> : null}
       {search.source === 'all' && !JAMENDO_CLIENT_ID ? (
         <Text style={styles.muted}>Jamendo results appear once a Jamendo Client ID is added.</Text>
@@ -1138,7 +1184,7 @@ function Main() {
               {editable ? `Add to "${openPlaylist.name}"` : 'Add from a link'}
             </Text>
             <Text style={styles.dialogHint}>
-              Paste a YouTube song or playlist link, an Audius or Jamendo track link, or a direct MP3 link.
+              Paste a YouTube song or playlist link, an Audius or Jamendo track link, an Internet Archive album, or a direct MP3 link.
             </Text>
             <View style={styles.linkRow}>
               <TextInput

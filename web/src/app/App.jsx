@@ -55,20 +55,26 @@ import {
 import { mergeSync, removeSynced, syncYouTube } from '../shared/ytsync';
 import {
   SOURCE_LABELS,
+  archiveItemTracks,
   artworkOf,
   canDownload,
   directAudioSong,
+  extractArchiveId,
   extractJamendoId,
   isAudiusLink,
   isYouTube,
   jamendoTrack,
   pageUrlOf,
+  popularArchive,
   popularJamendo,
   resolveAudius,
+  searchArchive,
   searchAudius,
   searchJamendo,
+  searchRadio,
   sourceOf,
   streamUrlOf,
+  topRadio,
   trendingAudius,
 } from '../shared/sources';
 
@@ -181,7 +187,7 @@ export default function App() {
   const [search, setSearch] = useState({ q: '', source: 'all', results: [], loading: false, error: '', heading: '' });
   const [searchText, setSearchText] = useState('');
   const searchSeq = useRef(0);
-  const [home, setHome] = useState({ trending: [], fresh: [], loading: true });
+  const [home, setHome] = useState({ trending: [], fresh: [], radio: [], loading: true });
 
   // Playback
   const [queue, setQueue] = useState([]);
@@ -326,13 +332,17 @@ export default function App() {
   // Home shelves
   const loadHome = useCallback(() => {
     setHome((h) => ({ ...h, loading: true }));
-    Promise.allSettled([trendingAudius(20), JAMENDO_CLIENT_ID ? popularJamendo(JAMENDO_CLIENT_ID, 20) : Promise.resolve([])]).then(
-      ([t, f]) =>
-        setHome({
-          trending: t.status === 'fulfilled' ? t.value : [],
-          fresh: f.status === 'fulfilled' ? f.value : [],
-          loading: false,
-        })
+    Promise.allSettled([
+      trendingAudius(20),
+      JAMENDO_CLIENT_ID ? popularJamendo(JAMENDO_CLIENT_ID, 20) : Promise.resolve([]),
+      topRadio(20),
+    ]).then(([t, f, r]) =>
+      setHome({
+        trending: t.status === 'fulfilled' ? t.value : [],
+        fresh: f.status === 'fulfilled' ? f.value : [],
+        radio: r.status === 'fulfilled' ? r.value : [],
+        loading: false,
+      })
     );
   }, []);
   useEffect(loadHome, [loadHome]);
@@ -525,7 +535,7 @@ export default function App() {
   handlers.current = {
     ...handlers.current,
     currentIsYouTube,
-    homeLoaded: home.trending.length > 0 || home.fresh.length > 0,
+    homeLoaded: home.trending.length > 0 || home.fresh.length > 0 || home.radio.length > 0,
     next,
     playPause,
     resume,
@@ -726,11 +736,14 @@ export default function App() {
       return;
     }
     setSearch((s) => ({ ...s, q, source, loading: true, error: '' }));
+    // "All sources" means songs; radio stations only show under Radio
     const tasks = [];
-    if (source !== 'jamendo') tasks.push(q ? searchAudius(q) : trendingAudius());
+    if (source === 'all' || source === 'audius') tasks.push(q ? searchAudius(q) : trendingAudius());
     if (source === 'jamendo' || (source === 'all' && JAMENDO_CLIENT_ID)) {
       tasks.push(q ? searchJamendo(q, JAMENDO_CLIENT_ID) : popularJamendo(JAMENDO_CLIENT_ID));
     }
+    if (source === 'all' || source === 'archive') tasks.push(q ? searchArchive(q) : popularArchive());
+    if (source === 'radio') tasks.push(q ? searchRadio(q) : topRadio());
     const settled = await Promise.allSettled(tasks);
     if (seq !== searchSeq.current) return;
     setSearch((s) => ({
@@ -738,7 +751,7 @@ export default function App() {
       results: interleave(settled.filter((r) => r.status === 'fulfilled').map((r) => r.value)),
       loading: false,
       error: settled.filter((r) => r.status === 'rejected').map((r) => r.reason.message).join(' '),
-      heading: q ? `Results for “${q}”` : 'Trending now',
+      heading: q ? `Results for “${q}”` : source === 'radio' ? 'Popular stations' : 'Trending now',
     }));
   };
 
@@ -839,6 +852,31 @@ export default function App() {
     }
     if (videoId) return addYouTubeSong(videoId);
 
+    // An Internet Archive album: one song, or all of them as a new playlist
+    const archiveId = extractArchiveId(url);
+    if (archiveId) {
+      setBusy('Reading the album on the Internet Archive…');
+      try {
+        const { title, songs } = await archiveItemTracks(archiveId);
+        if (!songs.length) return showToast('That Internet Archive page has no MP3 songs.');
+        if (songs.length === 1) return addSongObject(songs[0]);
+        const now = Date.now();
+        const pl = { id: `pl_${now}`, name: title, source: 'local', songIds: songs.map((s) => s.id) };
+        setLib((l) => {
+          const have = new Set(l.songs.map((s) => s.id));
+          const add = songs.filter((s) => !have.has(s.id)).map((s, k) => ({ ...s, addedAt: now - k }));
+          return { ...l, songs: [...add, ...l.songs], playlists: [...l.playlists, pl] };
+        });
+        go(pl.id);
+        showToast(`Imported "${title}": ${songs.length} songs`);
+      } catch (e) {
+        showToast(e.message);
+      } finally {
+        setBusy(null);
+      }
+      return;
+    }
+
     if (isAudiusLink(url)) {
       setBusy('Finding the track on Audius…');
       const song = await resolveAudius(url).catch(() => null);
@@ -861,7 +899,7 @@ export default function App() {
     }
 
     const song = directAudioSong(url);
-    if (!song) return showToast('That link is not recognized. Paste a YouTube, Audius, Jamendo or audio file link.');
+    if (!song) return showToast('That link is not recognized. Paste a YouTube, Audius, Jamendo, Internet Archive or audio file link.');
     setBusy('Checking the audio link…');
     const probe = await probeAudio(url);
     setBusy(null);
@@ -1019,23 +1057,26 @@ export default function App() {
 
   const VolumeIcon = muted || volume === 0 ? VolumeX : volume < 50 ? Volume1 : Volume2;
 
+  // Live radio has no length and can't be seeked
+  const live = !!current && !!current.live;
   const progressBar = (
-    <div className="progress">
+    <div className={`progress ${live ? 'live' : ''}`}>
       <span className="time">{fmtTime(progress)}</span>
       <input
         type="range"
         className="range"
-        style={{ '--pct': `${pct}%` }}
+        style={{ '--pct': `${live ? 0 : pct}%` }}
         min="0"
-        max={time.d || 1}
+        max={live ? 1 : time.d || 1}
         step="0.1"
-        value={progress}
+        value={live ? 0 : progress}
         onChange={(e) => setSeeking(+e.target.value)}
         onPointerUp={finishSeek}
         onKeyUp={finishSeek}
+        disabled={live}
         aria-label="Seek"
       />
-      <span className="time">{fmtTime(time.d)}</span>
+      <span className="time">{live ? <b className="live-badge">LIVE</b> : fmtTime(time.d)}</span>
     </div>
   );
 
@@ -1429,6 +1470,36 @@ export default function App() {
           </Shelf>
         ) : null}
 
+        {home.radio.length ? (
+          <Shelf
+            title="Live radio"
+            action={
+              <button
+                className="link"
+                onClick={() => {
+                  setSearchText('');
+                  setViewId(SEARCH);
+                  runSearch('', 'radio');
+                }}
+              >
+                Show all
+              </button>
+            }
+          >
+            {home.radio.map((s, i) => (
+              <Card
+                key={s.id}
+                title={s.title}
+                subtitle={s.artist}
+                cover={<Cover songs={[s]} seed={s.id} />}
+                playing={isPlaying && current && current.id === s.id}
+                onOpen={() => startQueue(home.radio, i, false, 'radio')}
+                onPlay={() => (current && current.id === s.id ? playPause() : startQueue(home.radio, i, false, 'radio'))}
+              />
+            ))}
+          </Shelf>
+        ) : null}
+
         {lib.playlists.length ? (
           <Shelf title="Your playlists">
             {lib.playlists.map((p) => (
@@ -1522,6 +1593,8 @@ export default function App() {
           ['all', 'All sources'],
           ['audius', 'Audius'],
           ['jamendo', 'Jamendo'],
+          ['archive', 'Internet Archive'],
+          ['radio', 'Live radio'],
         ].map(([key, label]) => (
           <button key={key} className={`chip ${search.source === key ? 'on' : ''}`} onClick={() => runSearch(search.q, key)}>
             {label}
@@ -1558,7 +1631,11 @@ export default function App() {
               <Play size={14} fill="currentColor" /> Play all
             </button>
           </div>
-          <p className="hint">Songs from Audius and Jamendo keep playing when your phone is locked.</p>
+          <p className="hint">
+            {search.source === 'radio'
+              ? 'Live stations from around the world. Search a station name or a genre like bollywood or lofi.'
+              : 'Songs from Search keep playing when your phone is locked. Internet Archive songs can be downloaded.'}
+          </p>
           <TrackTable
             songs={search.results}
             currentId={current && current.id}
@@ -1779,7 +1856,7 @@ export default function App() {
               </button>
               <div className="np-from">
                 <span>Playing from</span>
-                <b>{queueFrom && lib.playlists.find((p) => p.id === queueFrom) ? lib.playlists.find((p) => p.id === queueFrom).name : queueFrom === 'search' ? 'Search' : queueFrom === ALL_SONGS ? 'All songs' : queueFrom === DOWNLOADS ? 'Downloaded' : 'TubeTunes'}</b>
+                <b>{queueFrom && lib.playlists.find((p) => p.id === queueFrom) ? lib.playlists.find((p) => p.id === queueFrom).name : queueFrom === 'search' ? 'Search' : queueFrom === ALL_SONGS ? 'All songs' : queueFrom === DOWNLOADS ? 'Downloaded' : queueFrom === 'radio' ? 'Live radio' : 'TubeTunes'}</b>
               </div>
               <button className="ibtn" title="More" onClick={(e) => openMenu(current, e)}>
                 <Ellipsis size={24} />
@@ -2021,7 +2098,7 @@ function LinkDialog({ onClose, onSubmit }) {
             <X size={18} />
           </button>
         </div>
-        <p className="muted">Paste a YouTube song or playlist, an Audius or Jamendo track, or a direct MP3 link.</p>
+        <p className="muted">Paste a YouTube song or playlist, an Audius or Jamendo track, an Internet Archive album, or a direct MP3 link.</p>
         <div className="link-row">
           <input autoFocus value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://…" />
           <button type="button" className="pill" onClick={paste} title="Paste from clipboard">

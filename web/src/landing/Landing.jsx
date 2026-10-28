@@ -30,7 +30,7 @@ const features = [
   ['⤮', 'Made for listening', 'Play queue, shuffle, repeat, search and your own playlists.'],
   ['📱', 'Phone, web and desktop', 'An Android app, plus a web app you can install on your computer. They all work the same way.'],
   ['🔒', 'Read-only access', 'TubeTunes never posts, deletes or changes anything on your account.'],
-  ['🔍', 'Search free music', 'Find full songs from Audius and Jamendo. They keep playing with your screen locked.'],
+  ['🔍', 'Search free music', 'Full songs from Audius, Jamendo and the Internet Archive, plus live radio from around the world. They keep playing with your screen locked.'],
 ];
 
 const faqs = [

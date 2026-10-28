@@ -55,6 +55,8 @@ const PlayerPanel = forwardRef(function PlayerPanel(
   }));
 
   const audioSong = !!song && !isYouTube(song);
+  // Live radio has no length and can't be seeked
+  const live = !!song && !!song.live;
   const art = audioSong ? artworkOf(song) : null;
   const t = audioSong && audioTime ? audioTime : time;
   const progress = t.d ? Math.min(1, t.t / t.d) : 0;
@@ -119,8 +121,8 @@ const PlayerPanel = forwardRef(function PlayerPanel(
             <Slider
               style={styles.slider}
               minimumValue={0}
-              maximumValue={t.d || 1}
-              value={shownTime}
+              maximumValue={live ? 1 : t.d || 1}
+              value={live ? 0 : shownTime}
               minimumTrackTintColor={colors.accent}
               maximumTrackTintColor={colors.line}
               thumbTintColor={colors.accent}
@@ -133,11 +135,11 @@ const PlayerPanel = forwardRef(function PlayerPanel(
                 }
                 setSeekValue(null);
               }}
-              disabled={!song}
+              disabled={!song || live}
             />
             <View style={styles.times}>
               <Text style={styles.time}>{fmtTime(shownTime)}</Text>
-              <Text style={styles.time}>{fmtTime(t.d)}</Text>
+              <Text style={[styles.time, live && styles.live]}>{live ? 'LIVE' : fmtTime(t.d)}</Text>
             </View>
 
             <View style={styles.buttons}>
@@ -234,6 +236,7 @@ const styles = StyleSheet.create({
   slider: { width: '100%', height: 40, marginTop: 24 },
   times: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 4 },
   time: { color: colors.muted, fontSize: 12, fontVariant: ['tabular-nums'] },
+  live: { color: '#f87171', fontWeight: '800', letterSpacing: 1 },
   buttons: {
     flexDirection: 'row',
     alignItems: 'center',

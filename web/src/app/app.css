@@ -502,6 +502,10 @@ h1, h2, h3 { margin: 0; letter-spacing: -0.02em; }
 .src-audius { background: rgba(139, 92, 246, 0.16); color: #b69bff; }
 .src-jamendo { background: rgba(14, 165, 233, 0.16); color: #67c8f5; }
 .src-url { background: rgba(255, 255, 255, 0.08); }
+.src-archive { background: rgba(245, 158, 11, 0.16); color: #fbbf24; }
+.src-radio { background: rgba(239, 68, 68, 0.16); color: #f87171; }
+.live-badge { font-size: 11px; letter-spacing: 0.08em; color: #f87171; }
+.progress.live .range { opacity: 0.4; }
 
 .eq { display: inline-flex; align-items: flex-end; gap: 2px; height: 14px; }
 .eq i { width: 3px; background: var(--accent); border-radius: 1px; animation: eq 0.9s ease-in-out infinite; }

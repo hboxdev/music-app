@@ -4,7 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { colors } from './theme';
 import { SOURCE_LABELS, artworkOf, sourceOf } from './sources';
 
-const BADGE_COLORS = { audius: '#8b5cf6', jamendo: '#0ea5e9', url: colors.muted };
+const BADGE_COLORS = { audius: '#8b5cf6', jamendo: '#0ea5e9', archive: '#f59e0b', radio: '#f87171', url: colors.muted };
 
 // onAdd: when given, shows a + button (✓ once the song is in the library)
 function SongRow({ song, number, playing, onPress, onMore, onAdd, inLibrary, downloaded, downloading }) {

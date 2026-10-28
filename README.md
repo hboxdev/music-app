@@ -22,9 +22,11 @@ TubeTunes turns a person's YouTube playlists into a music app. It has three part
 | YouTube | Sync, or paste a song/playlist link | No (YouTube's player stops). TubeTunes keeps the screen on instead |
 | Audius | **Search** tab, or paste an `audius.co` link | Yes, with lock-screen controls |
 | Jamendo | **Search** tab, or paste a `jamendo.com/track/…` link | Yes, with lock-screen controls |
+| Internet Archive | **Search** tab, or paste an `archive.org/details/…` album link (imports every song as a playlist) | Yes, with lock-screen controls. Songs can be downloaded |
+| Live radio ([radio-browser.info](https://www.radio-browser.info)) | **Search** tab → Live radio (station name or genre) | Yes. Live, so no downloads or seeking |
 | Direct audio link | Paste a link to an `.mp3` (or other audio) file you have the right to play | Yes |
 
-Audius needs no key. Jamendo needs a free Client ID: sign up at <https://devportal.jamendo.com>, create an app, and put its Client ID in:
+Audius, the Internet Archive and live radio need no key. Jamendo needs a free Client ID: sign up at <https://devportal.jamendo.com>, create an app, and put its Client ID in:
 
 - `web/.env` (and Vercel) → `VITE_JAMENDO_CLIENT_ID=...`
 - `mobile/src/config.js` → `JAMENDO_CLIENT_ID`
