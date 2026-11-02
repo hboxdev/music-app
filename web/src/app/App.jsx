@@ -846,6 +846,20 @@ export default function App() {
     runSearch(q, search.source);
   };
 
+  // Official YouTube search needs either the project's API key or a user's
+  // read-only OAuth token. Connecting here enables search without forcing a
+  // full playlist sync or making sign-in mandatory for the other sources.
+  const connectYouTubeSearch = async () => {
+    if (!navigator.onLine) return showToast('You are offline. Connect to the internet to search YouTube.');
+    try {
+      await getAccessToken();
+      showToast('YouTube search connected');
+      runSearch(search.q, search.source);
+    } catch (error) {
+      showToast(error.message || 'Could not connect YouTube search.');
+    }
+  };
+
   // ---------- YouTube sync ----------
   const syncNow = async () => {
     if (!navigator.onLine) return showToast('You’re offline. Connect to the internet to sync YouTube.');
@@ -1763,7 +1777,7 @@ export default function App() {
           }}
           onKeyDown={onSearchKey}
           onBlur={closeSuggest}
-          placeholder="What do you want to listen to?"
+          placeholder="Search YouTube and free music sources"
           autoComplete="off"
           autoFocus
         />
@@ -1819,6 +1833,30 @@ export default function App() {
         ))}
       </div>
 
+      {(search.source === 'all' || search.source === 'youtube') && !youtubeAuth() ? (
+        <div className="youtube-search-connect">
+          <span className="youtube-search-icon"><YouTubeIcon size={22} /></span>
+          <span>
+            <b>Add official YouTube results</b>
+            <small>Connect read-only YouTube search. Audius, Jamendo and Internet Archive continue working without sign-in.</small>
+          </span>
+          {googleConfigured ? (
+            <button className="pill accent" onClick={connectYouTubeSearch} disabled={!googleReady}>
+              <GoogleIcon size={17} /> Connect YouTube
+            </button>
+          ) : (
+            <a
+              className="pill accent"
+              href={`https://www.youtube.com/results?search_query=${encodeURIComponent(searchText || search.q)}`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Search on YouTube
+            </a>
+          )}
+        </div>
+      ) : null}
+
       {search.error ? <p className="error">{search.error}</p> : null}
 
       {!search.q ? (
@@ -1853,8 +1891,8 @@ export default function App() {
             {search.source === 'radio'
               ? 'Live stations from around the world. Search a station name or a genre like bollywood or lofi.'
               : search.source === 'youtube'
-              ? 'Original songs from YouTube. They play in YouTube’s player and can’t be downloaded.'
-              : 'YouTube songs come first. Songs from the free sources keep playing when your phone is locked, and Internet Archive songs can be downloaded.'}
+              ? 'Official YouTube results play in YouTube’s player. Use All sources to find authorized downloadable versions too.'
+              : 'YouTube results appear first when connected. Download buttons only appear on authorized Audius, Jamendo, Internet Archive, or direct-audio results.'}
           </p>
           <TrackTable
             songs={search.results}
