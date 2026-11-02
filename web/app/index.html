@@ -9,8 +9,25 @@
   <link rel="manifest" href="../manifest.webmanifest">
   <link rel="apple-touch-icon" href="../icons/apple-touch-icon.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="TubeTunes">
+  <script>
+    // Register before the module graph loads so an installed copy can recover
+    // from a cold offline launch where the service worker is not controlling yet.
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('../sw.js', { scope: './' }).catch(() => {});
+      window.addEventListener('error', async (event) => {
+        if (event.target?.tagName !== 'SCRIPT' || event.target?.type !== 'module') return;
+        if (sessionStorage.getItem('tubetunes:offline-retry')) return;
+        sessionStorage.setItem('tubetunes:offline-retry', '1');
+        try {
+          await navigator.serviceWorker.ready;
+          location.reload();
+        } catch {}
+      }, true);
+    }
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 </head>

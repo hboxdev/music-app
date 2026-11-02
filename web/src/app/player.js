@@ -64,3 +64,44 @@ export async function readPlaylistIds(listId) {
     });
   });
 }
+
+// Reads duration through YouTube's official IFrame Player API without playing
+// the video. oEmbed supplies title/author but not duration.
+export async function readVideoDuration(videoId) {
+  const YT = await loadYouTubeApi();
+  return new Promise((resolve) => {
+    const holder = document.createElement('div');
+    holder.style.cssText = 'position:fixed;left:-9999px;top:0;width:200px;height:113px';
+    const target = document.createElement('div');
+    holder.appendChild(target);
+    document.body.appendChild(holder);
+    let helper;
+    let timer;
+    let tries = 0;
+    const done = (duration = 0) => {
+      clearInterval(timer);
+      try {
+        helper?.destroy();
+      } catch {}
+      holder.remove();
+      resolve(Math.round(duration) || 0);
+    };
+    helper = new YT.Player(target, {
+      width: '200',
+      height: '113',
+      videoId,
+      playerVars: { autoplay: 0, controls: 0, mute: 1, playsinline: 1 },
+      events: {
+        onReady: () => {
+          helper.cueVideoById(videoId);
+          timer = setInterval(() => {
+            const duration = helper.getDuration?.() || 0;
+            if (duration > 0) done(duration);
+            else if (++tries > 30) done(0);
+          }, 250);
+        },
+        onError: () => done(0),
+      },
+    });
+  });
+}

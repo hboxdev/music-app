@@ -1,10 +1,28 @@
 // Service worker for the installed web app (/app/).
 // Keeps the app's own files so it opens quickly and still starts without
 // internet. Music, YouTube and Google requests are never touched.
-// Songs saved for offline listening live in their own cache (see
-// src/app/offline.js), which this file never deletes.
-const CACHE = 'tubetunes-v2';
+// Songs saved for offline listening live in IndexedDB (see
+// src/app/offline.js), independent from this replaceable app-shell cache.
+const CACHE = 'tubetunes-v8';
 const APP = new URL('./app/', self.location).href;
+
+async function cacheWithImports(url, cache, seen) {
+  if (seen.has(url)) return;
+  seen.add(url);
+  const response = await fetch(url, { cache: 'reload' });
+  if (!response.ok) return;
+  await cache.put(url, response.clone());
+  if (!new URL(url).pathname.endsWith('.js')) return;
+
+  // Vite may split React and other shared code into imported chunks that do
+  // not appear in index.html. Follow those same-origin module imports so the
+  // app can hydrate on the very first offline launch.
+  const source = await response.text();
+  const imports = [...source.matchAll(/(?:from\s*|import\s*)["']([^"']+)["']/g)]
+    .map((match) => new URL(match[1], url).href)
+    .filter((item) => item.startsWith(self.location.origin));
+  await Promise.all(imports.map((item) => cacheWithImports(item, cache, seen).catch(() => {})));
+}
 
 // Saves the app page and every file it links to (scripts, styles, icons),
 // so the app opens offline right after the first visit
@@ -17,7 +35,8 @@ async function precache() {
   const files = [...html.matchAll(/(?:src|href)="([^"]+)"/g)]
     .map((m) => new URL(m[1], APP).href)
     .filter((u) => u.startsWith(self.location.origin));
-  await Promise.all([...new Set(files)].map((u) => cache.add(u).catch(() => {})));
+  const seen = new Set([APP]);
+  await Promise.all([...new Set(files)].map((u) => cacheWithImports(u, cache, seen).catch(() => {})));
 }
 
 self.addEventListener('install', (event) => {
@@ -28,7 +47,7 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches
       .keys()
-      .then((keys) => Promise.all(keys.filter((k) => k.startsWith('tubetunes-v') && k !== CACHE).map((k) => caches.delete(k))))
+      .then((keys) => Promise.all(keys.filter((key) => key.startsWith('tubetunes-v') && key !== CACHE).map((key) => caches.delete(key))))
       .then(() => self.clients.claim())
   );
 });
@@ -49,7 +68,7 @@ self.addEventListener('fetch', (event) => {
           }
           return res;
         })
-        .catch(() => caches.match(APP))
+        .catch(() => caches.match(APP, { ignoreVary: true }))
     );
     return;
   }
@@ -57,7 +76,7 @@ self.addEventListener('fetch', (event) => {
   // Built files have a hash in their name and never change, so the cache wins
   if (url.pathname.includes('/assets/') || url.pathname.includes('/icons/')) {
     event.respondWith(
-      caches.match(req).then(
+      caches.match(req, { ignoreVary: true }).then(
         (hit) =>
           hit ||
           fetch(req).then((res) => {
@@ -73,5 +92,5 @@ self.addEventListener('fetch', (event) => {
   }
 
   // Anything else of ours (favicon, manifest): network, or the saved copy offline
-  event.respondWith(fetch(req).catch(() => caches.match(req).then((hit) => hit || Response.error())));
+  event.respondWith(fetch(req).catch(() => caches.match(req, { ignoreVary: true }).then((hit) => hit || Response.error())));
 });

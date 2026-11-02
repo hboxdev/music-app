@@ -14,7 +14,7 @@ TubeTunes turns a person's YouTube playlists into a music app. It has three part
 1. A user opens the website and taps **Download for Android** (or **Open web app** on any other device).
 2. In the app they tap **Connect YouTube** and sign in with Google. TubeTunes asks for **read-only** access (`youtube.readonly`).
 3. TubeTunes reads their playlists and liked videos through the YouTube Data API and shows them as a music library. **Sync** refreshes them, and the phone app also refreshes quietly when it starts.
-4. Songs play through YouTube's official embedded player. Nothing is downloaded as MP3.
+4. YouTube songs play through the official embedded player and are never extracted. On the web, authorized files from Audius creators, Jamendo, Internet Archive and direct audio URLs can be saved for offline playback.
 
 ### Music sources
 
@@ -26,6 +26,8 @@ TubeTunes turns a person's YouTube playlists into a music app. It has three part
 | Internet Archive | **Search** tab, or paste an `archive.org/details/…` album link (imports every song as a playlist) | Yes, with lock-screen controls. Songs can be downloaded |
 | Live radio ([radio-browser.info](https://www.radio-browser.info)) | **Search** tab → Live radio (station name or genre) | Yes. Live, so no downloads or seeking |
 | Direct audio link | Paste a link to an `.mp3` (or other audio) file you have the right to play | Yes |
+
+The web app's **Download audio** flow validates a link, shows its metadata and available format, then stores the authorized audio Blob in IndexedDB. The **Downloaded** section supports persistent offline playback, search, sorting, file sizes and deletion. The service worker keeps the interface available offline; browser storage quotas still apply. YouTube links show metadata and can be added for official streaming, but TubeTunes does not convert or download YouTube media.
 
 The player shows lyrics from [LRCLIB](https://lrclib.net) (free, no key). Most popular songs have synced lyrics that follow the song; tap a line to jump there. Lyrics are saved on the device once loaded, so they also show offline. Lyrics are copyrighted by their writers and LRCLIB's are added by its users, so for a large or paid app consider a licensed provider such as Musixmatch.
 

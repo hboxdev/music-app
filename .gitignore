@@ -12,6 +12,7 @@ web-build/
 .env*.local
 .DS_Store
 npm-debug.*
+.browser-*/
 
 # Download helper: yt-dlp, downloaded songs and your password stay on your PC
 /helper/bin/

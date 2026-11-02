@@ -42,12 +42,11 @@ import {
   X,
 } from 'lucide-react';
 import { loadLibrary, saveLibrary } from './storage';
-import { listSaved, removeOffline, saveBlob, saveOffline, savedBlob } from './offline';
-import { helperAudio, helperConfig, normalizeHelperUrl, saveHelperConfig, testHelper } from './helper';
+import { listSaved, removeOffline, saveOffline, savedBlob, storageInfo } from './offline';
 import { cachedAccessToken, getAccessToken, googleConfigured, initGoogle, signOutGoogle } from './google';
-import { loadYouTubeApi, readPlaylistIds } from './player';
+import { loadYouTubeApi, readPlaylistIds, readVideoDuration } from './player';
 import Lyrics, { prefetchLyrics } from './Lyrics';
-import { Card, Cover, Equalizer, HeartButton, Shelf, TrackTable, YouTubeIcon, fmtTime, hueOf } from './ui';
+import { Card, Cover, Equalizer, HeartButton, Shelf, TrackTable, YouTubeIcon, fmtBytes, fmtTime, hueOf } from './ui';
 import {
   extractPlaylistId,
   extractVideoId,
@@ -219,15 +218,14 @@ export default function App() {
   const [menu, setMenu] = useState(null); // { song, x, y, top }
   const [dialog, setDialog] = useState(null);
   const [linkOpen, setLinkOpen] = useState(false);
+  const [downloaderOpen, setDownloaderOpen] = useState(false);
   const [googleReady, setGoogleReady] = useState(false);
   const [panelOpen, setPanelOpen] = useState(true);
   const wide = useMedia('(min-width: 1180px)');
 
   // Offline: songs saved inside this browser, and whether there is internet
   const [savedIds, setSavedIds] = useState(() => new Set());
-  // Your own download helper for YouTube songs (set at /app/#helper)
-  const [helper, setHelper] = useState(helperConfig);
-  // A downloaded YouTube song plays from its saved audio instead of the video
+  // Downloaded audio plays from IndexedDB instead of its network source.
   const [audioCopyId, setAudioCopyId] = useState(null);
   const [downloading, setDownloading] = useState({}); // songId → true while saving
   const [downloadSort, setDownloadSort] = useState('newest');
@@ -305,7 +303,7 @@ export default function App() {
 
   const current = queue[index] || null;
   const currentIsYouTube = !!current && isYouTube(current) && audioCopyId !== current.id;
-  const canSave = (song) => canDownload(song) || (!!helper && isYouTube(song) && !song.live);
+  const canSave = canDownload;
 
   // ---------- Player setup ----------
   // YouTube's player needs internet to load; without it, this runs again once
@@ -994,77 +992,121 @@ export default function App() {
     addSongObject({ ...song, duration: probe.duration });
   };
 
-  // ---------- Downloads ----------
-  // Saves the song inside the app (not the Downloads folder) so it plays
-  // without internet, and adds it to the library and the Downloaded list.
-  // Jamendo's file server may not let browsers read its files; then the
-  // download fails with a message.
-  // ---------- Download helper (YouTube songs, personal use) ----------
-  const openHelperSettings = () =>
-    setDialog({
-      title: 'Download helper',
-      note: 'The helper runs on your own PC and downloads the audio of YouTube songs (see the helper folder). Only this browser uses it.',
-      fields: [
-        { key: 'url', label: 'Address', value: helper ? helper.url : 'http://localhost:7777', placeholder: 'http://localhost:7777' },
-        { key: 'password', label: 'Password', value: helper ? helper.password : '', type: 'password' },
-      ],
-      submitLabel: 'Connect',
-      extra: helper ? { label: 'Turn off', onClick: () => (saveHelperConfig(null), setHelper(null), showToast('Download helper turned off')) } : null,
-      onSubmit: async ({ url, password }) => {
-        const c = { url: normalizeHelperUrl(url), password: password.trim() };
-        try {
-          const h = await testHelper(c);
-          saveHelperConfig(c);
-          setHelper(c);
-          showToast(`Download helper connected (yt-dlp ${h.ytdlp}). YouTube songs can now be downloaded.`);
-        } catch (e) {
-          showToast(e.message);
-        }
-      },
-    });
-
-  handlers.current.openHelperSettings = openHelperSettings;
-
-  useEffect(() => {
-    const check = () => {
-      if (location.hash !== '#helper') return;
-      history.replaceState(history.state, '', location.pathname + location.search);
-      handlers.current.openHelperSettings();
-    };
-    check();
-    window.addEventListener('hashchange', check);
-    return () => window.removeEventListener('hashchange', check);
-  }, []);
-
-  const downloadSong = async (song) => {
-    if (!canSave(song)) return showToast('This song can’t be downloaded. Its owner only allows streaming.');
-    if (savedIds.has(song.id) || Object.hasOwn(downloading, song.id)) return;
-    if (!navigator.onLine) return showToast('You’re offline. Connect to the internet to download.');
-    setDownloading((d) => ({ ...d, [song.id]: null }));
-    showToast(`Downloading “${song.title}”…`);
+  // Resolve metadata first. YouTube metadata can be shown and added to the
+  // library, but only sources with an explicit authorized download URL can
+  // continue to offline storage.
+  const resolveDownloadLink = async (rawUrl) => {
+    const url = rawUrl.trim();
+    let parsed;
     try {
-      const saved = isYouTube(song)
-        ? await saveBlob(song, await helperAudio(helper, song.id))
-        : await saveOffline(song, [song.downloadUrl, streamUrlOf(song)].filter(Boolean), ({ percent }) => {
-            if (percent != null) setDownloading((d) => ({ ...d, [song.id]: percent }));
-          });
+      parsed = new URL(url);
+    } catch {
+      throw new Error('Enter a complete URL beginning with https://');
+    }
+    if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('Only http and https links are supported.');
+
+    const videoId = extractVideoId(url);
+    if (videoId) {
+      const info = await fetchVideoInfo(videoId);
+      if (!info) throw new Error('Could not read that YouTube video. It may be private, removed, or unavailable.');
+      const duration = await readVideoDuration(videoId).catch(() => 0);
+      return {
+        title: info.title,
+        songs: [{ id: videoId, source: 'youtube', ...info, duration }],
+        authorized: false,
+        format: 'YouTube playback',
+        reason: 'YouTube links can be added for official embedded playback, but YouTube does not authorize this app to extract or save their audio.',
+      };
+    }
+    if (extractPlaylistId(url)) throw new Error('Paste an individual YouTube video URL here. Playlists can still be imported with Add from link.');
+
+    const archiveId = extractArchiveId(url);
+    if (archiveId) {
+      const result = await archiveItemTracks(archiveId);
+      if (!result.songs.length) throw new Error('That Internet Archive page has no downloadable MP3 tracks.');
+      return { title: result.title, songs: result.songs, authorized: true, format: 'MP3', quality: 'Original archive MP3' };
+    }
+
+    if (isAudiusLink(url)) {
+      const song = await resolveAudius(url);
+      if (!song) throw new Error('Could not find that Audius track.');
+      return {
+        title: song.title,
+        songs: [song],
+        authorized: canDownload(song),
+        format: 'Original audio',
+        quality: 'Artist-provided download',
+        reason: canDownload(song) ? '' : 'This artist allows streaming but has not enabled an unrestricted download.',
+      };
+    }
+
+    const jamendoId = extractJamendoId(url);
+    if (jamendoId) {
+      const song = await jamendoTrack(jamendoId, JAMENDO_CLIENT_ID);
+      if (!song) throw new Error('Could not find that Jamendo track.');
+      return {
+        title: song.title,
+        songs: [song],
+        authorized: canDownload(song),
+        format: 'MP3',
+        quality: 'Jamendo MP3',
+        reason: canDownload(song) ? '' : 'This track is licensed for streaming, but its creator has not enabled downloads.',
+      };
+    }
+
+    const song = directAudioSong(url);
+    if (!song) throw new Error('This URL is not a supported audio source.');
+    const probe = await probeAudio(url);
+    if (!probe.ok) throw new Error('This is not a direct browser-playable audio file, or its server blocks access.');
+    const ext = parsed.pathname.match(/\.([a-z0-9]{2,5})$/i)?.[1]?.toUpperCase() || 'Audio';
+    return {
+      title: song.title,
+      songs: [{ ...song, duration: probe.duration }],
+      authorized: true,
+      format: ext,
+      quality: 'Original file (no conversion)',
+    };
+  };
+
+  const downloadSong = async (song, options = {}) => {
+    if (!canSave(song)) {
+      const error = new Error(isYouTube(song) ? 'YouTube audio downloads are not authorized.' : 'This source only allows streaming.');
+      if (!options.silent) showToast(error.message);
+      return { ok: false, error };
+    }
+    if (savedIds.has(song.id)) return { ok: true, alreadySaved: true };
+    if (Object.hasOwn(downloading, song.id)) return { ok: false, error: new Error('This download is already running.') };
+    if (!navigator.onLine) {
+      const error = new Error('You are offline. Connect to the internet to download.');
+      if (!options.silent) showToast(error.message);
+      return { ok: false, error };
+    }
+    setDownloading((d) => ({ ...d, [song.id]: null }));
+    if (!options.silent) showToast(`Downloading “${song.title}”…`);
+    try {
+      const saved = await saveOffline(
+        song,
+        [song.downloadUrl, streamUrlOf(song)].filter(Boolean),
+        (progress) => {
+          if (progress.percent != null) setDownloading((d) => ({ ...d, [song.id]: progress.percent }));
+          options.onProgress?.(progress);
+        },
+        { signal: options.signal }
+      );
       setLib((l) => ({
         ...l,
         songs: l.songs.some((s) => s.id === song.id)
-          ? l.songs.map((s) => s.id === song.id ? { ...s, fileSize: saved.size, downloadedAt: Date.now() } : s)
-          : [{ ...song, fileSize: saved.size, downloadedAt: Date.now(), addedAt: Date.now() }, ...l.songs],
+          ? l.songs.map((s) => s.id === song.id ? { ...s, fileSize: saved.size, downloadedAt: saved.savedAt } : s)
+          : [{ ...song, fileSize: saved.size, downloadedAt: saved.savedAt, addedAt: Date.now() }, ...l.songs],
       }));
       setSavedIds((ids) => new Set(ids).add(song.id));
-      showToast(`“${song.title}” is downloaded and plays without internet`);
+      if (!options.silent) showToast(`“${song.title}” is downloaded and plays without internet`);
       if (!song.live) prefetchLyrics(song);
+      return { ok: true, saved };
     } catch (e) {
-      showToast(
-        e.message !== 'download failed'
-          ? e.message
-          : song.source === 'jamendo'
-            ? 'Jamendo doesn’t let web browsers save its songs. Use the Android app to download this one.'
-            : 'Download failed. Check your internet connection and try again.'
-      );
+      const error = e?.name === 'AbortError' ? new Error('Download cancelled.') : e;
+      if (!options.silent) showToast(error.message || 'Download failed. Check your connection and try again.');
+      return { ok: false, error };
     } finally {
       setDownloading((d) => {
         const n = { ...d };
@@ -1847,10 +1889,12 @@ export default function App() {
   const bottomNav = [
     [HOME, 'Home', House],
     [SEARCH, 'Search', Search],
+    [DOWNLOADS, 'Downloaded', CircleArrowDown],
     [COLLECTION, 'Your Library', Library],
   ];
-  const navActive = (id) =>
-    id === COLLECTION ? viewId === COLLECTION || isListView : viewId === id;
+  const navActive = (id) => id === COLLECTION
+    ? viewId === COLLECTION || (isListView && viewId !== DOWNLOADS)
+    : viewId === id;
 
   return (
     <div className={`shell ${panelVisible ? 'with-panel' : ''}`} onClick={() => setMenu(null)}>
@@ -1868,6 +1912,9 @@ export default function App() {
           </button>
           <button className={`nav-link ${viewId === SEARCH ? 'active' : ''}`} onClick={() => go(SEARCH)}>
             <Search size={22} /> Search
+          </button>
+          <button className="nav-link download-link" onClick={() => setDownloaderOpen(true)}>
+            <Download size={22} /> Download audio
           </button>
         </nav>
         <div className="box library">{libraryPanel}</div>
@@ -1893,6 +1940,9 @@ export default function App() {
                 <MonitorDown size={16} /> <span className="hide-sm">Install app</span>
               </button>
             ) : null}
+            <button className="pill accent" onClick={() => setDownloaderOpen(true)}>
+              <Download size={16} /> <span className="hide-sm">Download audio</span>
+            </button>
             <button className="pill light" onClick={() => setLinkOpen(true)}>
               <Link2 size={16} /> <span className="hide-sm">Add from link</span>
             </button>
@@ -2117,6 +2167,19 @@ export default function App() {
       ) : null}
 
       {linkOpen ? <LinkDialog onClose={() => setLinkOpen(false)} onSubmit={(url) => addFromLink(url)} /> : null}
+      {downloaderOpen ? (
+        <DownloaderDialog
+          onClose={() => setDownloaderOpen(false)}
+          onResolve={resolveDownloadLink}
+          onDownload={downloadSong}
+          onAdd={addSongObject}
+          onOpenDownloads={() => {
+            setDownloaderOpen(false);
+            go(DOWNLOADS);
+          }}
+          isSaved={isSaved}
+        />
+      ) : null}
       {dialog ? <Dialog dialog={dialog} onClose={() => setDialog(null)} /> : null}
 
       {busy ? (
@@ -2260,6 +2323,168 @@ function LoginScreen({ ready, onSignIn, onSkip }) {
   );
 }
 
+function DownloaderDialog({ onClose, onResolve, onDownload, onAdd, onOpenDownloads, isSaved }) {
+  const [url, setUrl] = useState('');
+  const [result, setResult] = useState(null);
+  const [selected, setSelected] = useState(0);
+  const [checking, setChecking] = useState(false);
+  const [progress, setProgress] = useState(null);
+  const [error, setError] = useState('');
+  const [done, setDone] = useState(false);
+  const [space, setSpace] = useState(null);
+  const aborter = useRef(null);
+  const song = result?.songs[selected] || null;
+  const downloadingNow = !!aborter.current;
+
+  const paste = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) setUrl(text.trim());
+    } catch {
+      setError('Clipboard access was blocked. Paste the URL into the field.');
+    }
+  };
+
+  const inspect = async (event) => {
+    event.preventDefault();
+    if (!url.trim() || checking) return;
+    setChecking(true);
+    setResult(null);
+    setSelected(0);
+    setDone(false);
+    setError('');
+    setProgress(null);
+    try {
+      const [metadata, estimate] = await Promise.all([onResolve(url), storageInfo().catch(() => null)]);
+      setResult(metadata);
+      setSpace(estimate);
+    } catch (e) {
+      setError(e.message || 'Could not inspect this link.');
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const start = async () => {
+    if (!song || !result.authorized || downloadingNow) return;
+    const controller = new AbortController();
+    aborter.current = controller;
+    setError('');
+    setDone(false);
+    setProgress({ percent: null, received: 0, total: 0 });
+    const outcome = await onDownload(song, {
+      silent: true,
+      signal: controller.signal,
+      onProgress: setProgress,
+    });
+    aborter.current = null;
+    if (outcome.ok) {
+      setDone(true);
+      setProgress((p) => ({ ...(p || {}), percent: 100 }));
+    } else {
+      setError(outcome.error?.message || 'Download failed. Try again.');
+      setProgress(null);
+    }
+  };
+
+  const close = () => {
+    aborter.current?.abort();
+    onClose();
+  };
+
+  const saved = song ? isSaved(song.id) : false;
+  return (
+    <div className="overlay" onClick={close}>
+      <form className="dialog downloader" onClick={(e) => e.stopPropagation()} onSubmit={inspect}>
+        <div className="dialog-head">
+          <div>
+            <span className="eyebrow">Offline audio</span>
+            <h2>Download audio</h2>
+          </div>
+          <button type="button" className="ibtn" onClick={close} title="Close">
+            <X size={18} />
+          </button>
+        </div>
+        <p className="muted">Paste a YouTube URL to view its metadata, or an authorized Audius, Jamendo, Internet Archive, or direct audio link to save it offline.</p>
+        <div className="link-row">
+          <input
+            autoFocus
+            inputMode="url"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="https://youtu.be/…"
+            aria-label="Audio source URL"
+            disabled={downloadingNow}
+          />
+          <button type="button" className="pill" onClick={paste} disabled={downloadingNow}>
+            <Clipboard size={16} /> Paste
+          </button>
+        </div>
+        {!result ? (
+          <div className="dialog-buttons">
+            <button type="button" className="pill" onClick={close}>Cancel</button>
+            <button className="pill accent" disabled={!url.trim() || checking}>
+              {checking ? <><LoaderCircle size={16} className="spin" /> Checking…</> : 'Check link'}
+            </button>
+          </div>
+        ) : null}
+
+        {result && song ? (
+          <div className="download-preview">
+            <div className="download-track">
+              <Cover songs={[song]} seed={song.id} className="download-art" />
+              <div>
+                <b>{song.title}</b>
+                <span>{song.artist || 'Unknown artist'}</span>
+                <small>{SOURCE_LABELS[sourceOf(song)]} · {song.duration ? fmtTime(song.duration) : 'Duration unavailable'}</small>
+              </div>
+            </div>
+            {result.songs.length > 1 ? (
+              <label className="download-field">
+                <span>Track</span>
+                <select value={selected} onChange={(e) => { setSelected(Number(e.target.value)); setDone(false); setProgress(null); }} disabled={downloadingNow}>
+                  {result.songs.map((item, index) => <option value={index} key={item.id}>{index + 1}. {item.title}</option>)}
+                </select>
+              </label>
+            ) : null}
+            <div className="download-options">
+              <label className="download-field">
+                <span>Format</span>
+                <select value={result.format} disabled><option>{result.format}</option></select>
+              </label>
+              <label className="download-field">
+                <span>Quality</span>
+                <select value={result.quality || 'Not available'} disabled><option>{result.quality || 'Not available'}</option></select>
+              </label>
+            </div>
+            {space?.quota ? <small className="storage-note">Browser storage: {fmtBytes(space.available)} available of {fmtBytes(space.quota)}</small> : null}
+            {!result.authorized ? <div className="download-notice"><YouTubeIcon size={18} /><span>{result.reason}</span></div> : null}
+            {progress ? (
+              <div className="download-progress" aria-live="polite">
+                <div><span>{done ? 'Saved for offline playback' : progress.percent == null ? 'Downloading audio…' : `Downloading audio… ${progress.percent}%`}</span><span>{progress.received ? fmtBytes(progress.received) : ''}</span></div>
+                <span className={progress.percent == null ? 'indeterminate' : ''}><i style={{ width: `${progress.percent ?? 36}%` }} /></span>
+              </div>
+            ) : null}
+            <div className="dialog-buttons">
+              <button type="button" className="pill" onClick={() => { setResult(null); setDone(false); setProgress(null); setError(''); }} disabled={downloadingNow}>Use another link</button>
+              {!result.authorized ? (
+                <button type="button" className="pill light" onClick={() => { onAdd(song); close(); }}>Add for streaming</button>
+              ) : done || saved ? (
+                <button type="button" className="pill accent" onClick={onOpenDownloads}><CircleCheck size={16} /> Open Downloaded</button>
+              ) : (
+                <button type="button" className="pill accent" onClick={start} disabled={downloadingNow}>
+                  {downloadingNow ? <><LoaderCircle size={16} className="spin" /> Downloading…</> : <><Download size={16} /> Download audio</>}
+                </button>
+              )}
+            </div>
+          </div>
+        ) : null}
+        {error ? <div className="download-error" role="alert">{error}</div> : null}
+      </form>
+    </div>
+  );
+}
+
 function LinkDialog({ onClose, onSubmit }) {
   const [url, setUrl] = useState('');
   const submit = (e) => {
@@ -2290,20 +2515,7 @@ function LinkDialog({ onClose, onSubmit }) {
             <Clipboard size={16} /> Paste
           </button>
         </div>
-        {dialog.note ? <p className="dialog-note">{dialog.note}</p> : null}
         <div className="dialog-buttons">
-          {dialog.extra ? (
-            <button
-              type="button"
-              className="pill"
-              onClick={() => {
-                onClose();
-                dialog.extra.onClick();
-              }}
-            >
-              {dialog.extra.label}
-            </button>
-          ) : null}
           <button type="button" className="pill" onClick={onClose}>
             Cancel
           </button>

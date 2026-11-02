@@ -8,7 +8,7 @@
 //   source 'archive': id 'ia_<hash>', identifier, streamUrl, pageUrl (one file of an Internet Archive item)
 //   source 'radio':   id 'radio_<stationuuid>', streamUrl, live: true (a live radio station)
 //   source 'url':     id 'url_<hash>', streamUrl (a direct audio link)
-import { thumbUrl } from './youtube';
+import { thumbUrl } from './youtube.js';
 
 const APP_NAME = 'TubeTunes';
 const AUDIUS = 'https://api.audius.co/v1';

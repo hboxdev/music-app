@@ -2,7 +2,7 @@
   "id": "./app/",
   "name": "TubeTunes",
   "short_name": "TubeTunes",
-  "description": "Your YouTube playlists, as a music app.",
+  "description": "Stream supported music and keep authorized audio downloads for offline playback.",
   "start_url": "./app/",
   "scope": "./app/",
   "display": "standalone",
