@@ -1,5 +1,5 @@
 // Presentational pieces of the player UI: covers, cards, track tables.
-import { Check, CircleCheck, Clock3, Disc3, Download, Ellipsis, Heart, LoaderCircle, Play, Pause, Plus } from 'lucide-react';
+import { Check, CircleCheck, Clock3, Disc3, Download, Ellipsis, Heart, LoaderCircle, Play, Pause, Plus, Search } from 'lucide-react';
 import { SOURCE_LABELS, artworkOf, canDownload as ownerAllowsDownload, sourceOf } from '../shared/sources';
 
 export function fmtTime(sec) {
@@ -101,7 +101,7 @@ export function Shelf({ title, action, children }) {
 // Spotify-style track list.
 // isSaved, downloading and canPlay show downloads and which songs play offline.
 // canDownload: which songs get a download button (by default, songs whose owners allow it)
-export function TrackTable({ songs, currentId, isPlaying, onPlay, onMore, onAdd, inLibrary, onDownload, canDownload = ownerAllowsDownload, isSaved, downloading = {}, canPlay }) {
+export function TrackTable({ songs, currentId, isPlaying, onPlay, onMore, onAdd, inLibrary, onDownload, onFindDownload, canDownload = ownerAllowsDownload, isSaved, downloading = {}, canPlay }) {
   return (
     <div className="tracks" role="table">
       <div className="tracks-head" role="row">
@@ -144,9 +144,33 @@ export function TrackTable({ songs, currentId, isPlaying, onPlay, onMore, onAdd,
             </span>
             <span className="col-source">
               <span className={`src src-${src}`}>{src === 'youtube' ? <YouTubeIcon size={14} /> : null}{SOURCE_LABELS[src]}</span>
+              {src === 'youtube' && onFindDownload ? (
+                <button
+                  className="src-find"
+                  title="Find an authorized downloadable version"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onFindDownload(s);
+                  }}
+                >
+                  <Search size={13} /> Find download
+                </button>
+              ) : null}
             </span>
             <span className="col-time">{s.duration ? fmtTime(s.duration) : ''}</span>
             <span className="col-actions">
+              {src === 'youtube' && onFindDownload ? (
+                <button
+                  className="ibtn find-download-mobile"
+                  title="Find an authorized downloadable version"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onFindDownload(s);
+                  }}
+                >
+                  <Search size={17} />
+                </button>
+              ) : null}
               {offline ? (
                 <span className="ibtn dl saved" title="Downloaded: plays without internet">
                   <CircleCheck size={17} />

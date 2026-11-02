@@ -128,6 +128,26 @@ function shuffled(arr) {
   return a;
 }
 
+const MATCH_NOISE = new Set(['official', 'video', 'audio', 'lyrics', 'lyric', 'hd', 'hq', 'music', 'feat', 'featuring', 'ft']);
+const matchWords = (value = '') =>
+  new Set(
+    value
+      .toLowerCase()
+      .normalize('NFKD')
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter((word) => word.length > 1 && !MATCH_NOISE.has(word))
+  );
+const overlap = (wanted, found) => {
+  if (!wanted.size) return 0;
+  let hits = 0;
+  wanted.forEach((word) => found.has(word) && hits++);
+  return hits / wanted.size;
+};
+const downloadMatchScore = (original, candidate) =>
+  overlap(matchWords(original.title), matchWords(candidate.title)) * 75
+  + overlap(matchWords(original.artist), matchWords(candidate.artist)) * 25;
+
 function timeAgo(ts) {
   if (!ts) return '';
   const min = Math.round((Date.now() - ts) / 60000);
@@ -860,6 +880,54 @@ export default function App() {
     }
   };
 
+  const findDownloadFor = async (song) => {
+    if (!navigator.onLine) return showToast('You are offline. Connect to the internet to find a download.');
+    const query = `${song.title || ''} ${song.artist || ''}`
+      .replace(/\b(official|music video|lyrics?|audio|hd|hq)\b/gi, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!query) return showToast('This song does not have enough information to search.');
+
+    setViewId(SEARCH);
+    setSearchText(query);
+    closeSuggest();
+    if (mainRef.current) mainRef.current.scrollTop = 0;
+    setSearch((currentSearch) => ({
+      ...currentSearch,
+      q: query,
+      source: 'all',
+      results: [],
+      loading: true,
+      error: '',
+      heading: `Finding authorized downloads for “${song.title}”`,
+    }));
+
+    const tasks = [searchAudius(query, 25), searchArchive(query, 25)];
+    if (JAMENDO_CLIENT_ID) tasks.push(searchJamendo(query, JAMENDO_CLIENT_ID, 25));
+    const settled = await Promise.allSettled(tasks);
+    const seen = new Set();
+    const matches = settled
+      .filter((result) => result.status === 'fulfilled')
+      .flatMap((result) => result.value)
+      .filter((candidate) => canDownload(candidate) && !seen.has(candidate.id) && seen.add(candidate.id))
+      .map((candidate) => ({ candidate, score: downloadMatchScore(song, candidate) }))
+      .filter(({ score }) => score >= 28)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 25)
+      .map(({ candidate }) => candidate);
+
+    setSearch((currentSearch) => ({
+      ...currentSearch,
+      results: matches,
+      loading: false,
+      error: matches.length
+        ? ''
+        : 'No authorized downloadable match was found. Try a shorter title or check again later.',
+      heading: `Authorized downloads for “${song.title}”`,
+    }));
+    showToast(matches.length ? `Found ${matches.length} downloadable match${matches.length === 1 ? '' : 'es'}` : 'No authorized download match found');
+  };
+
   // ---------- YouTube sync ----------
   const syncNow = async () => {
     if (!navigator.onLine) return showToast('You’re offline. Connect to the internet to sync YouTube.');
@@ -1550,6 +1618,7 @@ export default function App() {
             onPlay={(i) => startQueue(viewSongs, i, shuffle, from)}
             onMore={openMenu}
             onDownload={downloadSong}
+            onFindDownload={findDownloadFor}
             canDownload={canSave}
             isSaved={isSaved}
             downloading={downloading}
@@ -1903,6 +1972,7 @@ export default function App() {
             onAdd={addSongObject}
             inLibrary={inLibrary}
             onDownload={downloadSong}
+            onFindDownload={findDownloadFor}
             canDownload={canSave}
             isSaved={isSaved}
             downloading={downloading}
