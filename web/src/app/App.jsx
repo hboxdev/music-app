@@ -42,10 +42,11 @@ import {
   X,
 } from 'lucide-react';
 import { loadLibrary, saveLibrary } from './storage';
-import { listSaved, removeOffline, saveOffline, savedBlob } from './offline';
+import { listSaved, removeOffline, saveBlob, saveOffline, savedBlob } from './offline';
+import { helperAudio, helperConfig, normalizeHelperUrl, saveHelperConfig, testHelper } from './helper';
 import { cachedAccessToken, getAccessToken, googleConfigured, initGoogle, signOutGoogle } from './google';
 import { loadYouTubeApi, readPlaylistIds } from './player';
-import Lyrics from './Lyrics';
+import Lyrics, { prefetchLyrics } from './Lyrics';
 import { Card, Cover, Equalizer, HeartButton, Shelf, TrackTable, YouTubeIcon, fmtTime, hueOf } from './ui';
 import {
   extractPlaylistId,
@@ -224,6 +225,10 @@ export default function App() {
 
   // Offline: songs saved inside this browser, and whether there is internet
   const [savedIds, setSavedIds] = useState(() => new Set());
+  // Your own download helper for YouTube songs (set at /app/#helper)
+  const [helper, setHelper] = useState(helperConfig);
+  // A downloaded YouTube song plays from its saved audio instead of the video
+  const [audioCopyId, setAudioCopyId] = useState(null);
   const [downloading, setDownloading] = useState({}); // songId → true while saving
   const [online, setOnline] = useState(() => navigator.onLine);
 
@@ -289,7 +294,8 @@ export default function App() {
   );
 
   const current = queue[index] || null;
-  const currentIsYouTube = !!current && isYouTube(current);
+  const currentIsYouTube = !!current && isYouTube(current) && audioCopyId !== current.id;
+  const canSave = (song) => canDownload(song) || (!!helper && isYouTube(song) && !song.live);
 
   // ---------- Player setup ----------
   // YouTube's player needs internet to load; without it, this runs again once
@@ -427,14 +433,16 @@ export default function App() {
       if (playerReady.current) player.current.pauseVideo();
       return skipBroken('you’re offline and it isn’t downloaded', song);
     }
-    if (isYouTube(song)) {
+    const fromCopy = savedIds.has(song.id);
+    setAudioCopyId(fromCopy && isYouTube(song) ? song.id : null);
+    if (isYouTube(song) && !fromCopy) {
       audio.current.pause();
       if (playerReady.current) player.current.loadVideoById(song.id);
       else pendingVideo.current = song.id;
     } else {
       pendingVideo.current = null;
       if (playerReady.current) player.current.pauseVideo();
-      if (!savedIds.has(song.id)) return playAudioFrom(streamUrlOf(song));
+      if (!fromCopy) return playAudioFrom(streamUrlOf(song));
       // A downloaded copy plays without internet
       audio.current.pause();
       savedBlob(song.id)
@@ -442,7 +450,7 @@ export default function App() {
         .then((blob) => {
           if (seq !== loadSeq.current) return;
           if (blob) playAudioFrom(URL.createObjectURL(blob));
-          else if (online) playAudioFrom(streamUrlOf(song));
+          else if (online && !isYouTube(song)) playAudioFrom(streamUrlOf(song));
           else skipBroken('the downloaded copy is missing', song);
         });
     }
@@ -981,20 +989,59 @@ export default function App() {
   // without internet, and adds it to the library and the Downloaded list.
   // Jamendo's file server may not let browsers read its files; then the
   // download fails with a message.
+  // ---------- Download helper (YouTube songs, personal use) ----------
+  const openHelperSettings = () =>
+    setDialog({
+      title: 'Download helper',
+      note: 'The helper runs on your own PC and downloads the audio of YouTube songs (see the helper folder). Only this browser uses it.',
+      fields: [
+        { key: 'url', label: 'Address', value: helper ? helper.url : 'http://localhost:7777', placeholder: 'http://localhost:7777' },
+        { key: 'password', label: 'Password', value: helper ? helper.password : '', type: 'password' },
+      ],
+      submitLabel: 'Connect',
+      extra: helper ? { label: 'Turn off', onClick: () => (saveHelperConfig(null), setHelper(null), showToast('Download helper turned off')) } : null,
+      onSubmit: async ({ url, password }) => {
+        const c = { url: normalizeHelperUrl(url), password: password.trim() };
+        try {
+          const h = await testHelper(c);
+          saveHelperConfig(c);
+          setHelper(c);
+          showToast(`Download helper connected (yt-dlp ${h.ytdlp}). YouTube songs can now be downloaded.`);
+        } catch (e) {
+          showToast(e.message);
+        }
+      },
+    });
+
+  handlers.current.openHelperSettings = openHelperSettings;
+
+  useEffect(() => {
+    const check = () => {
+      if (location.hash !== '#helper') return;
+      history.replaceState(history.state, '', location.pathname + location.search);
+      handlers.current.openHelperSettings();
+    };
+    check();
+    window.addEventListener('hashchange', check);
+    return () => window.removeEventListener('hashchange', check);
+  }, []);
+
   const downloadSong = async (song) => {
-    if (!canDownload(song)) return showToast('This song can’t be downloaded. Its owner only allows streaming.');
+    if (!canSave(song)) return showToast('This song can’t be downloaded. Its owner only allows streaming.');
     if (savedIds.has(song.id) || downloading[song.id]) return;
     if (!navigator.onLine) return showToast('You’re offline. Connect to the internet to download.');
     setDownloading((d) => ({ ...d, [song.id]: true }));
     showToast(`Downloading “${song.title}”…`);
     try {
-      await saveOffline(song, [song.downloadUrl, streamUrlOf(song)].filter(Boolean));
+      if (isYouTube(song)) await saveBlob(song, await helperAudio(helper, song.id));
+      else await saveOffline(song, [song.downloadUrl, streamUrlOf(song)].filter(Boolean));
       setLib((l) => ({
         ...l,
         songs: l.songs.some((s) => s.id === song.id) ? l.songs : [{ ...song, addedAt: Date.now() }, ...l.songs],
       }));
       setSavedIds((ids) => new Set(ids).add(song.id));
       showToast(`“${song.title}” is downloaded and plays without internet`);
+      if (!song.live) prefetchLyrics(song);
     } catch (e) {
       showToast(
         e.message !== 'download failed'
@@ -1418,6 +1465,7 @@ export default function App() {
             onPlay={(i) => startQueue(viewSongs, i, shuffle, from)}
             onMore={openMenu}
             onDownload={downloadSong}
+            canDownload={canSave}
             isSaved={isSaved}
             downloading={downloading}
             canPlay={canPlay}
@@ -1746,6 +1794,7 @@ export default function App() {
             onAdd={addSongObject}
             inLibrary={inLibrary}
             onDownload={downloadSong}
+            canDownload={canSave}
             isSaved={isSaved}
             downloading={downloading}
             canPlay={canPlay}
@@ -1856,7 +1905,7 @@ export default function App() {
                 <button onClick={() => go(DOWNLOADS)}>
                   <CircleCheck size={13} /> Downloaded
                 </button>
-              ) : canDownload(current) ? (
+              ) : canSave(current) ? (
                 <button onClick={() => downloadSong(current)} disabled={!!downloading[current.id]}>
                   <Download size={13} /> {downloading[current.id] ? 'Downloading…' : 'Download'}
                 </button>
@@ -1988,7 +2037,7 @@ export default function App() {
                   <span className="ibtn saved" title="Downloaded: plays without internet">
                     <CircleCheck size={20} />
                   </span>
-                ) : canDownload(current) ? (
+                ) : canSave(current) ? (
                   <button className="ibtn" title="Download" onClick={() => downloadSong(current)} disabled={!!downloading[current.id]}>
                     {downloading[current.id] ? <LoaderCircle size={20} className="spin" /> : <Download size={20} />}
                   </button>
@@ -2020,6 +2069,7 @@ export default function App() {
           onEdit={menuAction(editSong)}
           onOpen={menuAction((s) => window.open(pageUrlOf(s), '_blank', 'noopener'))}
           onDownload={menuAction(downloadSong)}
+          canDownload={canSave(menu.song)}
           saved={savedIds.has(menu.song.id)}
           onRemoveDownload={menuAction(removeDownload)}
           onAdd={(pl) => menuAction((s) => addToPlaylist(s, pl))()}
@@ -2054,7 +2104,7 @@ export default function App() {
   );
 }
 
-function SongMenu({ menu, inLibrary, playlists, inMyPlaylist, onPlayNext, onAddToLibrary, onEdit, onOpen, onDownload, saved, onRemoveDownload, onAdd, onNew, onRemove, onDelete }) {
+function SongMenu({ menu, inLibrary, playlists, inMyPlaylist, onPlayNext, onAddToLibrary, onEdit, onOpen, onDownload, canDownload, saved, onRemoveDownload, onAdd, onNew, onRemove, onDelete }) {
   const ref = useRef(null);
   const [pos, setPos] = useState({ left: menu.x, top: menu.y, visibility: 'hidden' });
   const [picking, setPicking] = useState(false);
@@ -2118,7 +2168,7 @@ function SongMenu({ menu, inLibrary, playlists, inMyPlaylist, onPlayNext, onAddT
             <Item icon={CircleMinus} onClick={onRemoveDownload}>
               Remove download
             </Item>
-          ) : canDownload(menu.song) ? (
+          ) : canDownload ? (
             <Item icon={Download} onClick={onDownload}>
               Download
             </Item>
@@ -2211,7 +2261,20 @@ function LinkDialog({ onClose, onSubmit }) {
             <Clipboard size={16} /> Paste
           </button>
         </div>
+        {dialog.note ? <p className="dialog-note">{dialog.note}</p> : null}
         <div className="dialog-buttons">
+          {dialog.extra ? (
+            <button
+              type="button"
+              className="pill"
+              onClick={() => {
+                onClose();
+                dialog.extra.onClick();
+              }}
+            >
+              {dialog.extra.label}
+            </button>
+          ) : null}
           <button type="button" className="pill" onClick={onClose}>
             Cancel
           </button>
@@ -2245,7 +2308,7 @@ function Dialog({ dialog, onClose }) {
         {dialog.fields.map((f, i) => (
           <label key={f.key} className="field">
             <span>{f.label}</span>
-            <input autoFocus={i === 0} value={values[f.key]} onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))} />
+            <input type={f.type || 'text'} placeholder={f.placeholder} autoFocus={i === 0} value={values[f.key]} onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))} />
           </label>
         ))}
         <div className="dialog-buttons">

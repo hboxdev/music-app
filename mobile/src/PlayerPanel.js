@@ -30,6 +30,7 @@ const PlayerPanel = forwardRef(function PlayerPanel(
     onError,
     audioTime, // { t, d } while a non-YouTube song plays, otherwise null
     onSeekAudio,
+    asAudio, // true when a downloaded YouTube song plays from its saved audio
   },
   ref
 ) {
@@ -56,7 +57,7 @@ const PlayerPanel = forwardRef(function PlayerPanel(
     getTime: () => timeRef.current.t,
   }));
 
-  const audioSong = !!song && !isYouTube(song);
+  const audioSong = !!song && (!isYouTube(song) || !!asAudio);
   // Live radio has no length and can't be seeked
   const live = !!song && !!song.live;
   const art = audioSong ? artworkOf(song) : null;

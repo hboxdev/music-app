@@ -33,6 +33,7 @@ import {
   fetchVideoInfo,
 } from './src/youtube';
 import { isSavedFile, removeOffline, saveOffline } from './src/downloads';
+import { helperAudioUrl, helperError, helperHeaders, loadHelperConfig, normalizeHelperUrl, saveHelperConfig, testHelper } from './src/helper';
 import {
   archiveItemTracks,
   artworkOf,
@@ -191,6 +192,14 @@ function Main() {
   }, []);
 
   // ---------- Derived data ----------
+  // Your own download helper for YouTube songs (long-press "TubeTunes")
+  const [helper, setHelper] = useState(null);
+  useEffect(() => {
+    loadHelperConfig().then(setHelper);
+  }, []);
+  // A downloaded YouTube song plays from its saved audio instead of the video
+  const [audioCopyId, setAudioCopyId] = useState(null);
+
   const songMap = useMemo(() => Object.fromEntries(lib.songs.map((s) => [s.id, s])), [lib.songs]);
   // "Downloaded" is a built-in list of the songs saved for offline listening
   const downloadedIds = useMemo(() => lib.songs.filter((s) => s.localUri).map((s) => s.id), [lib.songs]);
@@ -213,7 +222,8 @@ function Main() {
   }, [openPlaylist, songMap, lib.songs, filter]);
 
   const current = queue[index] || null;
-  const currentIsYouTube = !!current && isYouTube(current);
+  const currentIsYouTube = !!current && isYouTube(current) && audioCopyId !== current.id;
+  const canSave = (song) => canDownload(song) || (!!helper && isYouTube(song) && !song.live);
 
   // ---------- Audio engine (Audius, Jamendo, links) ----------
   // A native audio player keeps going when the phone is locked and shows
@@ -245,7 +255,11 @@ function Main() {
   // ---------- Playback ----------
   const loadSong = (song) => {
     clearTimeout(audioLoadTimer.current);
-    if (isYouTube(song)) {
+    // A downloaded copy plays without internet
+    const saved = songMap[song.id];
+    const local = saved && saved.localUri && isSavedFile(saved.localUri) ? saved.localUri : null;
+    setAudioCopyId(local && isYouTube(song) ? song.id : null);
+    if (isYouTube(song) && !local) {
       audio.pause();
       try {
         audio.clearLockScreenControls();
@@ -257,9 +271,6 @@ function Main() {
     pendingVideo.current = null;
     if (playerReady.current) player.current.pause();
     setAudioTime({ t: 0, d: song.duration || 0 });
-    // A downloaded copy plays without internet
-    const saved = songMap[song.id];
-    const local = saved && saved.localUri && isSavedFile(saved.localUri) ? saved.localUri : null;
     audio.replace({ uri: local || streamUrlOf(song) });
     audio.play();
     try {
@@ -804,17 +815,60 @@ function Main() {
       ),
     }));
 
+  // ---------- Download helper (YouTube songs, personal use) ----------
+  const askHelper = () =>
+    setPrompt({
+      title: 'Download helper',
+      note: 'The helper runs on your own PC and downloads the audio of YouTube songs. Use its Tailscale address (https://…ts.net) and password.',
+      fields: [
+        { key: 'url', label: 'Address', value: helper ? helper.url : '', plain: true },
+        { key: 'password', label: 'Password', value: helper ? helper.password : '', secure: true },
+      ],
+      submitLabel: 'Connect',
+      onSubmit: async ({ url, password }) => {
+        const c = { url: normalizeHelperUrl(url), password: password.trim() };
+        try {
+          const h = await testHelper(c);
+          await saveHelperConfig(c);
+          setHelper(c);
+          showToast(`Download helper connected (yt-dlp ${h.ytdlp})`);
+        } catch (e) {
+          Alert.alert('Download helper', e.message);
+        }
+      },
+    });
+
+  const openHelperSettings = () => {
+    if (!helper) return askHelper();
+    Alert.alert('Download helper', `Connected to ${helper.url}`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Turn off',
+        style: 'destructive',
+        onPress: () => {
+          saveHelperConfig(null);
+          setHelper(null);
+          showToast('Download helper turned off');
+        },
+      },
+      { text: 'Change', onPress: askHelper },
+    ]);
+  };
+
   // ---------- Offline downloads ----------
   const downloadSong = async (song) => {
-    if (!canDownload(song)) {
+    if (!canSave(song)) {
       Alert.alert("Can't download", 'This song’s owner only allows streaming. Songs from Jamendo usually can be downloaded.');
       return;
     }
+    const fromHelper = isYouTube(song);
     if (downloading[song.id]) return;
     setDownloading((d) => ({ ...d, [song.id]: true }));
     showToast(`Downloading "${song.title}"…`);
     try {
-      const uri = await saveOffline(song);
+      const uri = fromHelper
+        ? await saveOffline(song, { url: helperAudioUrl(helper, song.id), headers: helperHeaders(helper), ext: 'm4a' })
+        : await saveOffline(song);
       setLib((l) => {
         const exists = l.songs.some((s) => s.id === song.id);
         const songs = exists
@@ -824,7 +878,8 @@ function Main() {
       });
       showToast(`"${song.title}" is saved for offline listening`);
     } catch (e) {
-      Alert.alert('Download failed', 'Check your internet connection and try again.');
+      const reason = fromHelper ? await helperError(helper, song.id) : null;
+      Alert.alert('Download failed', reason || 'Check your internet connection and try again.');
     } finally {
       setDownloading((d) => {
         const n = { ...d };
@@ -1059,12 +1114,12 @@ function Main() {
               <Text style={styles.backText}>Playlists</Text>
             </Pressable>
           ) : (
-            <View style={styles.brand}>
+            <Pressable style={styles.brand} onLongPress={openHelperSettings} delayLongPress={800}>
               <View style={styles.logo}>
                 <Ionicons name="musical-notes" size={18} color="#fff" />
               </View>
               <Text style={styles.brandText}>TubeTunes</Text>
-            </View>
+            </Pressable>
           )}
           <Pressable style={styles.addBtn} onPress={() => setAddOpen(true)} hitSlop={8}>
             <Ionicons name="add" size={26} color="#fff" />
@@ -1241,6 +1296,7 @@ function Main() {
         onStateChange={onPlayerState}
         onError={onPlayerError}
         audioTime={current && !currentIsYouTube ? audioTime : null}
+        asAudio={!currentIsYouTube}
         onSeekAudio={seekTo}
       />
 
@@ -1305,7 +1361,7 @@ function Main() {
         inLibrary={!!menuSong && !!songMap[menuSong.id]}
         playlists={lib.playlists.filter((p) => p.source !== 'youtube')}
         currentPlaylistId={screen === 'songs' && editable ? openPlaylistId : null}
-        canDownload={!!menuSong && canDownload(menuSong)}
+        canDownload={!!menuSong && canSave(menuSong)}
         downloaded={!!menuSong && !!songMap[menuSong.id] && !!songMap[menuSong.id].localUri}
         onDownload={downloadSong}
         onRemoveDownload={removeDownload}

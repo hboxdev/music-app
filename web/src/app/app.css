@@ -1100,3 +1100,5 @@ h1, h2, h3 { margin: 0; letter-spacing: -0.02em; }
   .toast { bottom: calc(140px + env(safe-area-inset-bottom)); }
   .menu { max-width: calc(100vw - 16px); }
 }
+
+.dialog-note { color: var(--muted); font-size: 13px; line-height: 1.5; margin: 0 0 12px; }

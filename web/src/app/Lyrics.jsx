@@ -19,6 +19,11 @@ const store = {
   },
 };
 
+// Saves a song's lyrics ahead of time, so a downloaded song has them offline
+export function prefetchLyrics(song) {
+  return getLyrics(song, song.duration || 0, store).catch(() => null);
+}
+
 // Lyrics card for the playing song. Synced lyrics follow the song and
 // clicking a line jumps there.
 export default function Lyrics({ song, time, duration, onSeek, className = '' }) {

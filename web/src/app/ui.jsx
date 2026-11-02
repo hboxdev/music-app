@@ -1,6 +1,6 @@
 // Presentational pieces of the player UI: covers, cards, track tables.
 import { Check, CircleCheck, Clock3, Disc3, Download, Ellipsis, Heart, LoaderCircle, Play, Pause, Plus } from 'lucide-react';
-import { SOURCE_LABELS, artworkOf, canDownload, sourceOf } from '../shared/sources';
+import { SOURCE_LABELS, artworkOf, canDownload as ownerAllowsDownload, sourceOf } from '../shared/sources';
 
 export function fmtTime(sec) {
   sec = Math.max(0, Math.floor(sec || 0));
@@ -94,7 +94,8 @@ export function Shelf({ title, action, children }) {
 
 // Spotify-style track list.
 // isSaved, downloading and canPlay show downloads and which songs play offline.
-export function TrackTable({ songs, currentId, isPlaying, onPlay, onMore, onAdd, inLibrary, onDownload, isSaved, downloading = {}, canPlay }) {
+// canDownload: which songs get a download button (by default, songs whose owners allow it)
+export function TrackTable({ songs, currentId, isPlaying, onPlay, onMore, onAdd, inLibrary, onDownload, canDownload = ownerAllowsDownload, isSaved, downloading = {}, canPlay }) {
   return (
     <div className="tracks" role="table">
       <div className="tracks-head" role="row">

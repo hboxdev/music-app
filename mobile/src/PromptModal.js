@@ -12,7 +12,8 @@ import {
 import { colors } from './theme';
 
 // A small dialog with one or more text fields.
-// prompt = { title, fields: [{ key, label, value }], submitLabel, onSubmit(values) }
+// prompt = { title, note?, fields: [{ key, label, value, secure?, plain? }], submitLabel, onSubmit(values) }
+// plain: no auto-capitals or corrections (for addresses and passwords)
 export default function PromptModal({ prompt, onClose }) {
   const [values, setValues] = useState({});
 
@@ -41,6 +42,7 @@ export default function PromptModal({ prompt, onClose }) {
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
         <View style={styles.box}>
           <Text style={styles.title}>{prompt.title}</Text>
+          {prompt.note ? <Text style={styles.note}>{prompt.note}</Text> : null}
           {prompt.fields.map((f, i) => (
             <View key={f.key}>
               {f.label ? <Text style={styles.label}>{f.label}</Text> : null}
@@ -49,6 +51,9 @@ export default function PromptModal({ prompt, onClose }) {
                 value={values[f.key] ?? ''}
                 onChangeText={(t) => setValues((v) => ({ ...v, [f.key]: t }))}
                 autoFocus={i === 0}
+                secureTextEntry={!!f.secure}
+                autoCapitalize={f.plain || f.secure ? 'none' : 'sentences'}
+                autoCorrect={!(f.plain || f.secure)}
                 placeholderTextColor={colors.muted}
                 returnKeyType={i === prompt.fields.length - 1 ? 'done' : 'next'}
                 onSubmitEditing={i === prompt.fields.length - 1 ? submit : undefined}
@@ -83,6 +88,7 @@ const styles = StyleSheet.create({
   },
   box: { backgroundColor: colors.panel, borderRadius: 16, padding: 20 },
   title: { color: colors.text, fontSize: 18, fontWeight: '700', marginBottom: 12 },
+  note: { color: colors.muted, fontSize: 13, lineHeight: 19, marginBottom: 4 },
   label: { color: colors.muted, fontSize: 13, marginTop: 8, marginBottom: 6 },
   input: {
     backgroundColor: colors.bg,

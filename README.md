@@ -6,6 +6,7 @@ TubeTunes turns a person's YouTube playlists into a music app. It has three part
 |---|---|
 | `web/` | React (Vite) website: landing page with the download button (`/`), the web app (`/app/`) and the privacy policy (`/privacy/`) |
 | `mobile/` | Expo (React Native) app for Android, and iOS later |
+| `helper/` | Optional download helper for your own PC: saves YouTube songs for offline listening with yt-dlp (personal use, see `helper/README.md`) |
 | `web/src/shared/` | YouTube link and sync code shared by both (copied into `mobile/src/`) |
 
 ## How it works

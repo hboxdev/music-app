@@ -32,6 +32,12 @@ export async function saveOffline(song, urls) {
     } catch {}
   }
   if (!blob) throw new Error('download failed');
+  await saveBlob(song, blob);
+}
+
+// Keeps an audio file the app already has (for example from the download helper)
+export async function saveBlob(song, blob) {
+  if (!offlineSupported) throw new Error('This browser can’t keep songs for offline listening.');
   const cache = await caches.open(CACHE);
   await cache.put(keyFor(song.id), new Response(blob, { headers: { 'Content-Type': blob.type || 'audio/mpeg' } }));
   // Ask the browser not to clear saved songs when the device runs low on space
