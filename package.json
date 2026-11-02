@@ -1,0 +1,7 @@
+{
+  "name": "tubetunes",
+  "private": true,
+  "scripts": {
+    "build:site": "npm --prefix web ci && npm --prefix web run build && node scripts/prepare-site.mjs"
+  }
+}
