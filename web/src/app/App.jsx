@@ -230,6 +230,7 @@ export default function App() {
   // A downloaded YouTube song plays from its saved audio instead of the video
   const [audioCopyId, setAudioCopyId] = useState(null);
   const [downloading, setDownloading] = useState({}); // songId → true while saving
+  const [downloadSort, setDownloadSort] = useState('newest');
   const [online, setOnline] = useState(() => navigator.onLine);
 
   // Chrome and Edge offer to install the web app as a desktop app; keep their
@@ -276,7 +277,16 @@ export default function App() {
   const songMap = useMemo(() => Object.fromEntries(lib.songs.map((s) => [s.id, s])), [lib.songs]);
   const inLibrary = useCallback((id) => !!songMap[id], [songMap]);
   const isSaved = useCallback((id) => savedIds.has(id), [savedIds]);
-  const downloadedSongs = useMemo(() => lib.songs.filter((s) => savedIds.has(s.id)), [lib.songs, savedIds]);
+  const downloadedSongs = useMemo(() => {
+    const songs = lib.songs.filter((s) => savedIds.has(s.id));
+    return songs.sort((a, b) =>
+      downloadSort === 'title'
+        ? a.title.localeCompare(b.title)
+        : downloadSort === 'size'
+          ? (b.fileSize || 0) - (a.fileSize || 0)
+          : (b.downloadedAt || b.addedAt || 0) - (a.downloadedAt || a.addedAt || 0)
+    );
+  }, [lib.songs, savedIds, downloadSort]);
   // Without internet only downloaded songs can play
   const canPlay = useCallback((song) => online || savedIds.has(song.id), [online, savedIds]);
   const view = lib.playlists.find((p) => p.id === viewId) || null;
@@ -1028,16 +1038,21 @@ export default function App() {
 
   const downloadSong = async (song) => {
     if (!canSave(song)) return showToast('This song can’t be downloaded. Its owner only allows streaming.');
-    if (savedIds.has(song.id) || downloading[song.id]) return;
+    if (savedIds.has(song.id) || Object.hasOwn(downloading, song.id)) return;
     if (!navigator.onLine) return showToast('You’re offline. Connect to the internet to download.');
-    setDownloading((d) => ({ ...d, [song.id]: true }));
+    setDownloading((d) => ({ ...d, [song.id]: null }));
     showToast(`Downloading “${song.title}”…`);
     try {
-      if (isYouTube(song)) await saveBlob(song, await helperAudio(helper, song.id));
-      else await saveOffline(song, [song.downloadUrl, streamUrlOf(song)].filter(Boolean));
+      const saved = isYouTube(song)
+        ? await saveBlob(song, await helperAudio(helper, song.id))
+        : await saveOffline(song, [song.downloadUrl, streamUrlOf(song)].filter(Boolean), ({ percent }) => {
+            if (percent != null) setDownloading((d) => ({ ...d, [song.id]: percent }));
+          });
       setLib((l) => ({
         ...l,
-        songs: l.songs.some((s) => s.id === song.id) ? l.songs : [{ ...song, addedAt: Date.now() }, ...l.songs],
+        songs: l.songs.some((s) => s.id === song.id)
+          ? l.songs.map((s) => s.id === song.id ? { ...s, fileSize: saved.size, downloadedAt: Date.now() } : s)
+          : [{ ...song, fileSize: saved.size, downloadedAt: Date.now(), addedAt: Date.now() }, ...l.songs],
       }));
       setSavedIds((ids) => new Set(ids).add(song.id));
       showToast(`“${song.title}” is downloaded and plays without internet`);
@@ -1061,6 +1076,10 @@ export default function App() {
 
   const removeDownload = (song) => {
     removeOffline(song.id).catch(() => {});
+    setLib((l) => ({
+      ...l,
+      songs: l.songs.map((s) => s.id === song.id ? { ...s, fileSize: undefined, downloadedAt: undefined } : s),
+    }));
     setSavedIds((ids) => {
       const n = new Set(ids);
       n.delete(song.id);
@@ -1455,6 +1474,16 @@ export default function App() {
             <Search size={16} />
             <input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Find in this list" />
           </label>
+          {isDownloads ? (
+            <label className="sort-downloads">
+              <span>Sort</span>
+              <select value={downloadSort} onChange={(e) => setDownloadSort(e.target.value)}>
+                <option value="newest">Newest</option>
+                <option value="title">Title</option>
+                <option value="size">File size</option>
+              </select>
+            </label>
+          ) : null}
         </div>
 
         {viewSongs.length ? (
@@ -1906,8 +1935,8 @@ export default function App() {
                   <CircleCheck size={13} /> Downloaded
                 </button>
               ) : canSave(current) ? (
-                <button onClick={() => downloadSong(current)} disabled={!!downloading[current.id]}>
-                  <Download size={13} /> {downloading[current.id] ? 'Downloading…' : 'Download'}
+                <button onClick={() => downloadSong(current)} disabled={Object.hasOwn(downloading, current.id)}>
+                  <Download size={13} /> {Object.hasOwn(downloading, current.id) ? 'Downloading…' : 'Download'}
                 </button>
               ) : null}
               <a href={pageUrlOf(current)} target="_blank" rel="noopener noreferrer">
@@ -2038,8 +2067,8 @@ export default function App() {
                     <CircleCheck size={20} />
                   </span>
                 ) : canSave(current) ? (
-                  <button className="ibtn" title="Download" onClick={() => downloadSong(current)} disabled={!!downloading[current.id]}>
-                    {downloading[current.id] ? <LoaderCircle size={20} className="spin" /> : <Download size={20} />}
+                  <button className="ibtn" title="Download" onClick={() => downloadSong(current)} disabled={Object.hasOwn(downloading, current.id)}>
+                    {Object.hasOwn(downloading, current.id) ? <LoaderCircle size={20} className="spin" /> : <Download size={20} />}
                   </button>
                 ) : null}
                 <a className="ibtn" href={pageUrlOf(current)} target="_blank" rel="noopener noreferrer" title="Open source page">

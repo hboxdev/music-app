@@ -10,6 +10,12 @@ export function fmtTime(sec) {
   return h ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`;
 }
 
+export function fmtBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '';
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+}
+
 // A stable colour for a playlist or page, used for header gradients
 export function hueOf(str = '') {
   let h = 0;
@@ -131,7 +137,9 @@ export function TrackTable({ songs, currentId, isPlaying, onPlay, onMore, onAdd,
               {art ? <img className={`t-art ${src === 'youtube' ? 'wide' : ''}`} src={art} alt="" loading="lazy" /> : <span className="t-art blank"><Disc3 size={18} /></span>}
               <span className="t-text">
                 <span className="t-name">{s.title}</span>
-                <span className="t-artist">{s.artist || 'Unknown artist'}</span>
+                <span className="t-artist">
+                  {s.artist || 'Unknown artist'}{s.fileSize ? ` · ${fmtBytes(s.fileSize)}` : ''}
+                </span>
               </span>
             </span>
             <span className="col-source">
@@ -143,9 +151,9 @@ export function TrackTable({ songs, currentId, isPlaying, onPlay, onMore, onAdd,
                 <span className="ibtn dl saved" title="Downloaded: plays without internet">
                   <CircleCheck size={17} />
                 </span>
-              ) : downloading[s.id] ? (
-                <span className="ibtn dl busy" title="Downloading…">
-                  <LoaderCircle size={17} className="spin" />
+              ) : Object.hasOwn(downloading, s.id) ? (
+                <span className="ibtn dl busy" title={downloading[s.id] == null ? 'Downloading…' : `Downloading… ${downloading[s.id]}%`}>
+                  {downloading[s.id] == null ? <LoaderCircle size={17} className="spin" /> : <small>{downloading[s.id]}%</small>}
                 </span>
               ) : onDownload && canDownload(s) ? (
                 <button

@@ -17,14 +17,30 @@ export async function listSaved() {
 }
 
 // Tries each link in turn and keeps the first one that gives audio
-export async function saveOffline(song, urls) {
+async function audioBlob(res, onProgress) {
+  const total = Number(res.headers.get('content-length')) || 0;
+  if (!res.body || !onProgress) return res.blob();
+  const reader = res.body.getReader();
+  const chunks = [];
+  let received = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    received += value.byteLength;
+    onProgress({ received, total, percent: total ? Math.round((received / total) * 100) : null });
+  }
+  return new Blob(chunks, { type: res.headers.get('content-type') || 'audio/mpeg' });
+}
+
+export async function saveOffline(song, urls, onProgress) {
   if (!offlineSupported) throw new Error('This browser can’t keep songs for offline listening.');
   let blob = null;
   for (const url of urls) {
     try {
       const res = await fetch(url);
       if (!res.ok) continue;
-      const b = await res.blob();
+      const b = await audioBlob(res, onProgress);
       if (b.size && !b.type.startsWith('text/')) {
         blob = b;
         break;
@@ -32,7 +48,7 @@ export async function saveOffline(song, urls) {
     } catch {}
   }
   if (!blob) throw new Error('download failed');
-  await saveBlob(song, blob);
+  return saveBlob(song, blob);
 }
 
 // Keeps an audio file the app already has (for example from the download helper)
@@ -44,6 +60,7 @@ export async function saveBlob(song, blob) {
   try {
     await navigator.storage.persist();
   } catch {}
+  return { size: blob.size, type: blob.type || 'audio/mpeg' };
 }
 
 export async function savedBlob(id) {

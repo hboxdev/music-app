@@ -13,11 +13,15 @@ const fileNameFor = (song, ext) => `${song.id.replace(/[^A-Za-z0-9_-]/g, '_')}.$
 
 // Downloads the song and returns the local file's URI.
 // source: { url, headers, ext }; by default the song's own download link.
-export async function saveOffline(song, source = { url: song.downloadUrl, ext: 'mp3' }) {
+export async function saveOffline(song, source = { url: song.downloadUrl, ext: 'mp3' }, onProgress) {
   const target = new File(folder(), fileNameFor(song, source.ext || 'mp3'));
-  const file = await File.downloadFileAsync(source.url, target, { idempotent: true, headers: source.headers });
+  const file = await File.downloadFileAsync(source.url, target, {
+    idempotent: true,
+    headers: source.headers,
+    onProgress,
+  });
   if (!file.exists || !file.size) throw new Error('The download was empty.');
-  return file.uri;
+  return { uri: file.uri, size: file.size };
 }
 
 export function isSavedFile(uri) {

@@ -330,6 +330,9 @@ h1, h2, h3 { margin: 0; letter-spacing: -0.02em; }
   width: 220px;
 }
 .find input { background: none; border: 0; outline: 0; width: 100%; color: var(--text); }
+.sort-downloads { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; font-weight: 700; }
+.sort-downloads select { border: 1px solid var(--line); border-radius: 999px; background: var(--raised); color: var(--text); padding: 8px 28px 8px 12px; }
+.ibtn.dl small { font-size: 9px; font-weight: 800; color: var(--accent); }
 
 /* Home */
 .home-head { padding: 8px 0 18px; }

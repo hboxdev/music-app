@@ -21,6 +21,7 @@ import { StatusBar } from 'expo-status-bar';
 import * as Clipboard from 'expo-clipboard';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { createAudioPlayer, setAudioModeAsync } from 'expo-audio';
+import { useIncomingShare } from 'expo-sharing';
 import { Ionicons } from '@expo/vector-icons';
 
 import { colors } from './src/theme';
@@ -200,16 +201,30 @@ function Main() {
   // A downloaded YouTube song plays from its saved audio instead of the video
   const [audioCopyId, setAudioCopyId] = useState(null);
 
+  const [downloading, setDownloading] = useState({}); // songId → true while saving
+  const [downloadSort, setDownloadSort] = useState('newest');
+  const { sharedPayloads, clearSharedPayloads } = useIncomingShare();
+
   const songMap = useMemo(() => Object.fromEntries(lib.songs.map((s) => [s.id, s])), [lib.songs]);
+
+  const downloadedSongs = useMemo(() => {
+    const songs = lib.songs.filter((s) => s.localUri);
+    return songs.sort((a, b) =>
+      downloadSort === 'title'
+        ? a.title.localeCompare(b.title)
+        : downloadSort === 'size'
+          ? (b.fileSize || 0) - (a.fileSize || 0)
+          : (b.downloadedAt || b.addedAt || 0) - (a.downloadedAt || a.addedAt || 0)
+    );
+  }, [lib.songs, downloadSort]);
   // "Downloaded" is a built-in list of the songs saved for offline listening
-  const downloadedIds = useMemo(() => lib.songs.filter((s) => s.localUri).map((s) => s.id), [lib.songs]);
+  const downloadedIds = useMemo(() => downloadedSongs.map((s) => s.id), [downloadedSongs]);
   const openPlaylist =
     openPlaylistId === DOWNLOADS
       ? { id: DOWNLOADS, name: 'Downloaded', source: 'downloads', songIds: downloadedIds }
       : lib.playlists.find((p) => p.id === openPlaylistId) || null;
   // Only the user's own playlists can be renamed, deleted or added to
   const editable = !!openPlaylist && openPlaylist.source !== 'youtube' && openPlaylist.source !== 'downloads';
-  const [downloading, setDownloading] = useState({}); // songId → true while saving
 
   const viewSongs = useMemo(() => {
     const list = openPlaylist
@@ -730,6 +745,16 @@ function Main() {
     if (text) setLinkText(text.trim());
   };
 
+  // A URL shared from YouTube or another app opens the same reviewed Add flow.
+  useEffect(() => {
+    const text = sharedPayloads.map((payload) => payload.value || '').join(' ');
+    const match = text.match(/https?:\/\/[^\s]+/i);
+    if (!match) return;
+    setLinkText(match[0].replace(/[),.;]+$/, ''));
+    setAddOpen(true);
+    clearSharedPayloads();
+  }, [sharedPayloads, clearSharedPayloads]);
+
   // songs: song objects to put in the new playlist (added to the library if needed)
   const createPlaylist = (songs = [], then) =>
     setPrompt({
@@ -862,18 +887,24 @@ function Main() {
       return;
     }
     const fromHelper = isYouTube(song);
-    if (downloading[song.id]) return;
-    setDownloading((d) => ({ ...d, [song.id]: true }));
+    if (Object.hasOwn(downloading, song.id)) return;
+    setDownloading((d) => ({ ...d, [song.id]: null }));
     showToast(`Downloading "${song.title}"…`);
     try {
-      const uri = fromHelper
-        ? await saveOffline(song, { url: helperAudioUrl(helper, song.id), headers: helperHeaders(helper), ext: 'm4a' })
-        : await saveOffline(song);
+      const savedFile = await saveOffline(
+        song,
+        fromHelper
+          ? { url: helperAudioUrl(helper, song.id), headers: helperHeaders(helper), ext: 'm4a' }
+          : { url: song.downloadUrl, ext: 'mp3' },
+        ({ bytesWritten, totalBytes }) => {
+          if (totalBytes > 0) setDownloading((d) => ({ ...d, [song.id]: Math.round((bytesWritten / totalBytes) * 100) }));
+        }
+      );
       setLib((l) => {
         const exists = l.songs.some((s) => s.id === song.id);
         const songs = exists
-          ? l.songs.map((s) => (s.id === song.id ? { ...s, localUri: uri } : s))
-          : [{ ...song, localUri: uri, addedAt: Date.now() }, ...l.songs];
+          ? l.songs.map((s) => (s.id === song.id ? { ...s, localUri: savedFile.uri, fileSize: savedFile.size, downloadedAt: Date.now() } : s))
+          : [{ ...song, localUri: savedFile.uri, fileSize: savedFile.size, downloadedAt: Date.now(), addedAt: Date.now() }, ...l.songs];
         return { ...l, songs };
       });
       showToast(`"${song.title}" is saved for offline listening`);
@@ -893,7 +924,12 @@ function Main() {
     const saved = songMap[song.id];
     if (!saved || !saved.localUri) return;
     removeOffline(saved.localUri);
-    setLib((l) => ({ ...l, songs: l.songs.map((s) => (s.id === song.id ? { ...s, localUri: undefined } : s)) }));
+    setLib((l) => ({
+      ...l,
+      songs: l.songs.map((s) =>
+        s.id === song.id ? { ...s, localUri: undefined, fileSize: undefined, downloadedAt: undefined } : s
+      ),
+    }));
     showToast('Removed the offline copy');
   };
 
@@ -941,7 +977,7 @@ function Main() {
       onPress={() => startQueue(viewSongs, i)}
       onMore={() => setMenuSong(item)}
       downloaded={!!item.localUri}
-      downloading={!!downloading[item.id]}
+      downloadProgress={Object.hasOwn(downloading, item.id) ? downloading[item.id] : undefined}
     />
   );
 
@@ -957,7 +993,7 @@ function Main() {
       onAdd={() => addSongObject(item)}
       inLibrary={!!songMap[item.id]}
       downloaded={!!(songMap[item.id] && songMap[item.id].localUri)}
-      downloading={!!downloading[item.id]}
+      downloadProgress={Object.hasOwn(downloading, item.id) ? downloading[item.id] : undefined}
     />
   );
 
@@ -1057,6 +1093,17 @@ function Main() {
           <Ionicons name="shuffle" size={18} color={colors.text} />
           <Text style={styles.ghostText}>Shuffle</Text>
         </Pressable>
+        {openPlaylistId === DOWNLOADS ? (
+          <Pressable
+            style={styles.ghostBtn}
+            onPress={() => setDownloadSort((s) => ({ newest: 'title', title: 'size', size: 'newest' }[s]))}
+          >
+            <Ionicons name="swap-vertical" size={18} color={colors.text} />
+            <Text style={styles.ghostText}>
+              {{ newest: 'Newest', title: 'Title', size: 'File size' }[downloadSort]}
+            </Text>
+          </Pressable>
+        ) : null}
         {editable ? (
           <>
             <Pressable style={styles.iconBtn} onPress={() => renamePlaylist(openPlaylist)}>
